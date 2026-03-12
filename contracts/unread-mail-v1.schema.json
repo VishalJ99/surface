@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surface-app.local/contracts/unread-mail-v1.schema.json",
+  "title": "Surface Unread Mail v1",
+  "type": "object",
+  "required": [
+    "contract",
+    "provider",
+    "email_count",
+    "emails"
+  ],
+  "properties": {
+    "contract": {
+      "const": "surface.unread_mail.v1"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "mailbox_url": {
+      "type": "string"
+    },
+    "profile_dir": {
+      "type": "string"
+    },
+    "email_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "emails": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "message_id",
+          "subject",
+          "from",
+          "body",
+          "preview",
+          "can_rsvp",
+          "available_actions"
+        ],
+        "properties": {
+          "message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_change_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "conversation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "instance_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "item_class": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_read": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "received_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sent_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from": {
+            "$ref": "#/$defs/mailbox"
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/mailbox"
+            }
+          },
+          "cc": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/mailbox"
+            }
+          },
+          "bcc": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/mailbox"
+            }
+          },
+          "subject": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "body_html": {
+            "type": "string"
+          },
+          "preview": {
+            "type": "string"
+          },
+          "available_actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "can_rsvp": {
+            "type": "boolean"
+          },
+          "meeting": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "row_aria_label": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "$defs": {
+    "mailbox": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "name",
+        "email"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}
