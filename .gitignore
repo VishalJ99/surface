@@ -5,3 +5,7 @@ __pycache__/
 *.pyc
 providers/*/.profiles/
 providers/*/exports/
+.surface/
+state/accounts/
+state/exports/
+state/ui/

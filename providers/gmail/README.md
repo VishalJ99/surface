@@ -4,11 +4,13 @@ This provider is not implemented yet.
 
 The expected approach is the Gmail API with OAuth desktop sign-in, not browser automation.
 
+When the root CLI supports Gmail, account state should be stored under `~/.surface/accounts/gmail/<account>/` by default.
+
 ## Target CLI
 
 ```bash
-python providers/gmail/export_unread_emails.py setup
-python providers/gmail/export_unread_emails.py export --output /absolute/path/to/unread.json
+python surface account setup --provider gmail --account personal
+python surface unread export --provider gmail --account personal --output /absolute/path/to/unread.json
 ```
 
 ## Expected Auth Model

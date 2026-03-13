@@ -2,6 +2,12 @@
 
 Surface App is a provider-first mail backend for a future macOS menu bar app. Each provider exports unread email into the same JSON contract so the UI layer can stay simple.
 
+Primary docs:
+
+- `docs/cli-architecture.md`: current CLI usage plus the recommended long-term provider/account/action architecture
+- `docs/provider-architecture.md`: provider-facing design principles
+- `AGENTS.md`: repo operating guide for future agents and automation
+
 The current focus is backend only:
 
 - stabilize the unread-mail export contract
@@ -20,16 +26,35 @@ surface-app/
     outlook/
 ```
 
-## Provider Contract
+## Public CLI
 
-Every provider should eventually expose the same CLI shape:
+The public automation surface is now the repo-local `surface` CLI.
+
+Current invocation in this repo:
 
 ```bash
-python providers/<provider>/export_unread_emails.py setup
-python providers/<provider>/export_unread_emails.py export --output /absolute/path/to/unread.json
+python surface --help
+```
+
+Implemented today:
+
+```bash
+python surface account setup --provider outlook --account imperial
+python surface account list
+python surface account inspect --provider outlook --account imperial
+python surface unread export --provider outlook --account imperial --headless
+```
+
+Reserved for the next phase:
+
+```bash
+python surface action ...
+python surface filter apply ...
 ```
 
 The output contract lives in `contracts/unread-mail-v1.schema.json`.
+
+By default, the root CLI stores account state, browser profiles, tokens, and default exports under `~/.surface/`. You can override that location with the `SURFACE_HOME` environment variable.
 
 ## Outlook Today
 
@@ -41,22 +66,39 @@ Quick start:
 conda env create -f environment.yml
 conda activate surface-app
 python -m playwright install chrome
-python providers/outlook/export_unread_emails.py setup
+python surface account setup --provider outlook --account imperial
 ```
+
+If you rerun `account setup` with the same `--provider` and `--account`, the CLI now warns that an existing setup was found and requires pressing Enter before it reuses or overwrites that account-scoped state.
 
 After the one-time login bootstrap, export unread mail with:
 
 ```bash
-python providers/outlook/export_unread_emails.py export \
-  --output providers/outlook/exports/unread.json \
+python surface unread export \
+  --provider outlook \
+  --account imperial \
+  --output ~/.surface/exports/raw/outlook-imperial-unread.json \
   --headless
+```
+
+To test multiple Outlook accounts, use different `--account` values. Each account gets its own persistent browser profile:
+
+```bash
+python surface account setup --provider outlook --account work
+python surface account setup --provider outlook --account personal
+
+python surface unread export --provider outlook --account work --headless
+python surface unread export --provider outlook --account personal --headless
+
+python surface account list
 ```
 
 The Outlook exporter:
 
-- reuses a dedicated Chrome profile
+- reuses an account-scoped Chrome profile
 - applies the `Unread` filter in Outlook Web
-- fetches structured message data from the authenticated Outlook session
+- exhausts the filtered unread list
+- fetches structured message and thread data from the authenticated Outlook session
 - writes JSON in the shared unread-mail contract
 - includes whether a message currently exposes RSVP actions
 

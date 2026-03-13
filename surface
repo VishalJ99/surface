@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""Repo-local entrypoint for the Surface CLI."""
+
+from surface_cli.main import main
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

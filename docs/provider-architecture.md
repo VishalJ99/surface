@@ -6,6 +6,8 @@ The rule is simple: every mail provider should export unread email into the same
 
 The development environment is shared across providers through the repo-level `environment.yml`.
 
+Provider account state for the root CLI should live outside the repo under `~/.surface/` by default.
+
 ## Current Direction
 
 - `providers/outlook` uses browser automation because the target Outlook account does not allow the preferred programmatic access path.
@@ -14,16 +16,20 @@ The development environment is shared across providers through the repo-level `e
 
 ## Provider Interface
 
-Each provider should expose:
+The public interface should be the root `surface` CLI.
+
+Providers should plug into commands shaped like:
 
 ```bash
-python providers/<provider>/export_unread_emails.py setup
-python providers/<provider>/export_unread_emails.py export --output /absolute/path/to/unread.json
+python surface account setup --provider <provider> --account <account>
+python surface unread export --provider <provider> --account <account> --output /absolute/path/to/unread.json
 ```
+
+Provider-local scripts are still acceptable as internal entrypoints while the repo is being refactored.
 
 `setup` is allowed to be provider-specific:
 
-- Outlook: sign in once with a dedicated browser profile
+- Outlook: sign in once with an account-scoped dedicated browser profile
 - Gmail: complete OAuth once and cache the refresh token
 
 `export` should always produce the same contract:
