@@ -10,7 +10,9 @@ import sys
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
+from time import monotonic
 from typing import Any
+from urllib.parse import urlparse
 
 try:
     from playwright.sync_api import BrowserContext, Error, Page, Playwright, sync_playwright
@@ -26,6 +28,15 @@ DEFAULT_OUTLOOK_URL = "https://outlook.office.com/mail/"
 DEFAULT_PROFILE_DIR = APP_DIR / ".profiles" / "outlook"
 DEFAULT_PROFILE_DIR_LABEL = "providers/outlook/.profiles/outlook"
 OWA_SERVICE_URL = "https://outlook.office.com/owa/service.svc"
+OWA_REQUIRED_HEADER_KEYS = (
+    "authorization",
+    "x-anchormailbox",
+    "x-owa-hosted-ux",
+    "x-owa-sessionid",
+    "x-req-source",
+    "prefer",
+    "user-agent",
+)
 
 
 class HTMLTextExtractor(HTMLParser):
@@ -130,40 +141,161 @@ def html_to_text(value: str) -> str:
     return parser.get_text()
 
 
-def capture_owa_headers(page: Page, outlook_url: str) -> dict[str, str]:
+def wait_for_message_list(page: Page, *, timeout: float = 30_000) -> None:
+    page.locator('[role="listbox"]').first.wait_for(timeout=timeout)
+
+
+def wait_for_mailbox_ready(page: Page, *, timeout: float = 30_000) -> None:
+    deadline = monotonic() + (timeout / 1000)
+    last_error: Error | None = None
+    while monotonic() < deadline:
+        if maybe_advance_account_picker(page):
+            page.wait_for_timeout(1_500)
+            continue
+
+        remaining_ms = max(500, int((deadline - monotonic()) * 1000))
+        try:
+            wait_for_message_list(page, timeout=min(2_000, remaining_ms))
+            return
+        except Error as exc:
+            last_error = exc
+            page.wait_for_timeout(750)
+
+    if last_error is not None:
+        raise last_error
+    wait_for_message_list(page, timeout=timeout)
+
+
+def maybe_advance_account_picker(page: Page) -> bool:
+    try:
+        body_text = page.locator("body").inner_text(timeout=2_000)
+    except Error:
+        return False
+
+    if "Pick an account" not in body_text:
+        return False
+
+    # Microsoft's picker usually shows one remembered account plus "Use another account".
+    # Prefer clicking the remembered account tile and skip the "use another account" affordance.
+    for selector in (
+        '[data-bind="text: session.tileDisplayName"]',
+        '[data-bind="text: session.signInName"]',
+    ):
+        locator = page.locator(selector)
+        if locator.count() == 1:
+            locator.first.click(no_wait_after=True)
+            return True
+
+    candidates = page.locator("div, button")
+    for index in range(min(candidates.count(), 30)):
+        candidate = candidates.nth(index)
+        try:
+            text = candidate.inner_text(timeout=500).strip()
+        except Error:
+            continue
+        if not text:
+            continue
+        lowered = text.lower()
+        if "use another account" in lowered or "terms of use" in lowered or "privacy" in lowered:
+            continue
+        if "\n" not in text and "@" not in text:
+            continue
+        candidate.click(no_wait_after=True)
+        return True
+
+    return False
+
+
+def has_complete_owa_headers(headers: dict[str, str]) -> bool:
+    return all(headers.get(key) for key in OWA_REQUIRED_HEADER_KEYS)
+
+
+def infer_service_url_from_mailbox_url(mailbox_url: str) -> str | None:
+    parsed = urlparse(mailbox_url)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+
+    path = parsed.path.strip("/")
+    if not path.startswith("mail"):
+        return f"{parsed.scheme}://{parsed.netloc}/owa/service.svc"
+
+    segments = path.split("/")
+    mailbox_suffix = ""
+    if len(segments) > 1 and segments[1]:
+        mailbox_suffix = segments[1]
+
+    if mailbox_suffix:
+        return f"{parsed.scheme}://{parsed.netloc}/owa/{mailbox_suffix}/service.svc"
+    return f"{parsed.scheme}://{parsed.netloc}/owa/service.svc"
+
+
+def capture_owa_session(context: BrowserContext, page: Page, outlook_url: str) -> tuple[str, dict[str, str]]:
     headers: dict[str, str] = {}
+    candidate_urls: list[str] = []
+    observed_service_urls: list[str] = []
+    preferred_service_url: str | None = None
+    fallback_service_url: str | None = None
 
     def on_request(request: Any) -> None:
-        if headers:
-            return
+        if request.resource_type in {"fetch", "xhr"} and len(candidate_urls) < 8:
+            candidate_urls.append(request.url)
         if request.resource_type not in {"fetch", "xhr"}:
             return
-        if "/owa/service.svc" not in request.url:
+        if "/service.svc" not in request.url:
             return
 
+        nonlocal fallback_service_url, preferred_service_url
+        raw_service_url = request.url.split("?", 1)[0]
+        if raw_service_url not in observed_service_urls and len(observed_service_urls) < 8:
+            observed_service_urls.append(raw_service_url)
+        if fallback_service_url is None:
+            fallback_service_url = raw_service_url
+        if "/published/service.svc" not in raw_service_url:
+            preferred_service_url = raw_service_url
+
         source = request.headers
-        for key in (
-            "authorization",
-            "x-anchormailbox",
-            "x-owa-hosted-ux",
-            "x-owa-sessionid",
-            "x-req-source",
-            "prefer",
-            "user-agent",
-        ):
+        for key in OWA_REQUIRED_HEADER_KEYS:
             value = source.get(key)
-            if value:
+            if value and not headers.get(key):
                 headers[key] = value
 
-    page.on("request", on_request)
+    context.on("request", on_request)
     page.goto(outlook_url, wait_until="domcontentloaded")
-    page.locator('[role="listbox"]').first.wait_for(timeout=30_000)
-    page.wait_for_timeout(3_000)
+    wait_for_mailbox_ready(page)
+
+    for attempt in range(4):
+        page.wait_for_timeout(3_000)
+        service_url = preferred_service_url or infer_service_url_from_mailbox_url(page.url) or fallback_service_url
+        if service_url and has_complete_owa_headers(headers):
+            return service_url, headers
+
+        if attempt == 0:
+            page.reload(wait_until="domcontentloaded")
+            wait_for_mailbox_ready(page)
+            continue
+
+        if attempt == 1:
+            apply_unread_filter(page)
+            continue
+
+        if attempt == 2:
+            page.wait_for_timeout(3_000)
+            continue
 
     if not headers:
-        raise RuntimeError("Could not capture Outlook service request headers from the browser session.")
+        raise RuntimeError(
+            "Could not capture Outlook service request headers from the browser session. "
+            "The profile reached Outlook, but no authenticated OWA request was observed. "
+            "If Outlook showed an account picker or login interstitial, rerun setup and wait "
+            "until the inbox list is visible before pressing Enter. "
+            f"Observed fetch/XHR URLs: {candidate_urls}"
+        )
 
-    return headers
+    raise RuntimeError(
+        "Could not determine the Outlook service endpoint for the browser session. "
+        f"Observed service URLs: {observed_service_urls or candidate_urls}; "
+        f"mailbox_url={page.url}"
+    )
 
 
 def apply_unread_filter(page: Page) -> None:
@@ -339,12 +471,13 @@ def build_conversation_payload(conversation_id: str) -> dict[str, Any]:
 
 def fetch_conversation_nodes(
     context: BrowserContext,
+    service_url: str,
     headers: dict[str, str],
     conversation_id: str,
 ) -> list[dict[str, Any]]:
     payload = build_conversation_payload(conversation_id)
     response = context.request.post(
-        f"{OWA_SERVICE_URL}?action=GetConversationItems&app=Mail&n=999",
+        f"{service_url}?action=GetConversationItems&app=Mail&n=999",
         headers=build_owa_headers(headers, "GetConversationItems"),
         data=json.dumps(payload),
     )
@@ -531,7 +664,7 @@ def run_export(args: argparse.Namespace) -> int:
 
     playwright, context, page = launch_context(profile_dir, headless=args.headless)
     try:
-        owa_headers = capture_owa_headers(page, args.outlook_url)
+        service_url, owa_headers = capture_owa_session(context, page, args.outlook_url)
         apply_unread_filter(page)
         filtered_rows = collect_filtered_conversations(page)
 
@@ -545,7 +678,7 @@ def run_export(args: argparse.Namespace) -> int:
 
             thread_messages: list[dict[str, Any]] = []
             unread_items: list[tuple[dict[str, Any], dict[str, Any]]] = []
-            for node in fetch_conversation_nodes(context, owa_headers, conversation_id):
+            for node in fetch_conversation_nodes(context, service_url, owa_headers, conversation_id):
                 node_metadata = {
                     "parent_internet_message_id": node.get("ParentInternetMessageId"),
                     "has_quoted_text": node.get("HasQuotedText"),
@@ -605,7 +738,8 @@ def run_export(args: argparse.Namespace) -> int:
             "contract": CONTRACT_VERSION,
             "provider": PROVIDER_NAME,
             "source": "outlook_web",
-            "mailbox_url": args.outlook_url,
+            "mailbox_url": page.url or args.outlook_url,
+            "service_url": service_url,
             "profile_dir": str(profile_dir.resolve()),
             "email_count": len(emails),
             "thread_count": len(threads),
