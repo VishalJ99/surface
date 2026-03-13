@@ -167,9 +167,6 @@ def capture_owa_headers(page: Page, outlook_url: str) -> dict[str, str]:
 
 
 def apply_unread_filter(page: Page) -> None:
-    if page.get_by_role("button", name="Unread").count():
-        return
-
     filter_button = page.get_by_role("button", name="Filter").first
     filter_button.wait_for(timeout=20_000)
     filter_button.click()
@@ -190,6 +187,20 @@ def collect_visible_rows(page: Page) -> list[dict[str, str]]:
         }))
         """
     )
+
+
+def reset_message_list_to_top(page: Page) -> None:
+    listbox = page.locator('[role="listbox"]').first
+    listbox.evaluate(
+        """
+        element => {
+            const candidates = [element, ...element.querySelectorAll('*')];
+            const target = candidates.find(node => node.scrollHeight > node.clientHeight + 5) || element;
+            target.scrollTop = 0;
+        }
+        """
+    )
+    page.wait_for_timeout(500)
 
 
 def scroll_message_list(page: Page) -> dict[str, int]:
@@ -213,26 +224,45 @@ def scroll_message_list(page: Page) -> dict[str, int]:
     )
 
 
-def collect_unread_conversations(page: Page) -> list[dict[str, str]]:
+def maybe_expand_filtered_results(page: Page) -> bool:
+    search_link = page.get_by_text("run a search for all filtered items", exact=False)
+    if not search_link.count():
+        return False
+
+    search_link.first.click()
+    page.wait_for_timeout(2_000)
+    reset_message_list_to_top(page)
+    return True
+
+
+def collect_filtered_conversations(page: Page) -> list[dict[str, str]]:
     seen: dict[str, dict[str, str]] = {}
     stagnant_rounds = 0
+    expanded_server_results = False
 
-    while stagnant_rounds < 3:
+    reset_message_list_to_top(page)
+
+    while stagnant_rounds < 4:
         grew = False
         for row in collect_visible_rows(page):
             conversation_id = row.get("conversation_id", "")
             if not conversation_id:
                 continue
 
-            is_unread = row.get("aria_label", "").startswith("Unread")
-            if is_unread and conversation_id not in seen:
+            if conversation_id not in seen:
                 seen[conversation_id] = row
                 grew = True
 
         scroll_state = scroll_message_list(page)
         page.wait_for_timeout(800)
+        moved = scroll_state.get("after", 0) > scroll_state.get("before", 0)
 
-        if grew:
+        if grew or moved:
+            stagnant_rounds = 0
+            continue
+
+        if not expanded_server_results and maybe_expand_filtered_results(page):
+            expanded_server_results = True
             stagnant_rounds = 0
             continue
 
@@ -307,7 +337,7 @@ def build_conversation_payload(conversation_id: str) -> dict[str, Any]:
     }
 
 
-def fetch_conversation_items(
+def fetch_conversation_nodes(
     context: BrowserContext,
     headers: dict[str, str],
     conversation_id: str,
@@ -324,15 +354,12 @@ def fetch_conversation_items(
         )
     data = response.json()
 
-    items: list[dict[str, Any]] = []
     response_messages = data.get("Body", {}).get("ResponseMessages", {}).get("Items", [])
     if not response_messages:
-        return items
+        return []
 
     conversation = response_messages[0].get("Conversation", {})
-    for node in conversation.get("ConversationNodes", []):
-        items.extend(node.get("Items", []))
-    return items
+    return conversation.get("ConversationNodes", [])
 
 
 def mailbox_from_exchange(value: dict[str, Any] | None) -> dict[str, str] | None:
@@ -376,10 +403,24 @@ def item_id_data(value: dict[str, Any] | None) -> dict[str, str] | None:
     return {"id": item_id or "", "change_key": change_key or ""}
 
 
-def export_record(
+def message_identity(item: dict[str, Any], conversation_id: str) -> str:
+    return (
+        item.get("ItemId", {}).get("Id")
+        or item.get("InternetMessageId")
+        or item.get("InstanceKey")
+        or f"{conversation_id}:{item.get('DateTimeReceived') or item.get('Subject') or 'unknown'}"
+    )
+
+
+def build_message_record(
     item: dict[str, Any],
     conversation_id: str,
-    row: dict[str, str],
+    *,
+    instance_key: str = "",
+    row_aria_label: str | None = None,
+    parent_internet_message_id: str | None = None,
+    has_quoted_text: bool | None = None,
+    is_root_node: bool | None = None,
 ) -> dict[str, Any]:
     body_html = (
         item.get("UniqueBody", {}).get("Value")
@@ -409,8 +450,11 @@ def export_record(
     return {
         "message_id": item.get("ItemId", {}).get("Id"),
         "message_change_key": item.get("ItemId", {}).get("ChangeKey"),
+        "internet_message_id": item.get("InternetMessageId"),
+        "parent_internet_message_id": parent_internet_message_id,
         "conversation_id": conversation_id,
-        "instance_key": item.get("InstanceKey") or row.get("instance_key"),
+        "conversation_thread_id": (item.get("ConversationThreadId") or {}).get("Id"),
+        "instance_key": item.get("InstanceKey") or instance_key,
         "item_class": item.get("ItemClass"),
         "is_read": item.get("IsRead"),
         "received_at": item.get("DateTimeReceived") or item.get("ReceivedOrRenewTime"),
@@ -422,11 +466,14 @@ def export_record(
         "subject": item.get("Subject", ""),
         "body": body_text,
         "body_html": body_html,
+        "body_scope": "unique_fragment",
         "preview": item.get("Preview", ""),
         "available_actions": response_objects,
         "can_rsvp": is_meeting_request and bool(meeting and meeting["available_rsvp_actions"]),
         "meeting": meeting,
-        "row_aria_label": row.get("aria_label", ""),
+        "has_quoted_text": has_quoted_text,
+        "is_root_node": is_root_node,
+        **({"row_aria_label": row_aria_label} if row_aria_label is not None else {}),
     }
 
 
@@ -486,24 +533,73 @@ def run_export(args: argparse.Namespace) -> int:
     try:
         owa_headers = capture_owa_headers(page, args.outlook_url)
         apply_unread_filter(page)
-        unread_rows = collect_unread_conversations(page)
+        filtered_rows = collect_filtered_conversations(page)
 
         emails: list[dict[str, Any]] = []
-        seen_message_ids: set[str] = set()
-        for row in unread_rows:
+        threads: list[dict[str, Any]] = []
+        seen_messages: set[str] = set()
+        for row in filtered_rows:
             conversation_id = row.get("conversation_id", "")
             if not conversation_id:
                 continue
 
-            for item in fetch_conversation_items(context, owa_headers, conversation_id):
-                if item.get("IsRead") is True:
+            thread_messages: list[dict[str, Any]] = []
+            unread_items: list[tuple[dict[str, Any], dict[str, Any]]] = []
+            for node in fetch_conversation_nodes(context, owa_headers, conversation_id):
+                node_metadata = {
+                    "parent_internet_message_id": node.get("ParentInternetMessageId"),
+                    "has_quoted_text": node.get("HasQuotedText"),
+                    "is_root_node": node.get("IsRootNode"),
+                }
+                for item in node.get("Items", []):
+                    thread_messages.append(
+                        build_message_record(
+                            item,
+                            conversation_id,
+                            parent_internet_message_id=node_metadata["parent_internet_message_id"],
+                            has_quoted_text=node_metadata["has_quoted_text"],
+                            is_root_node=node_metadata["is_root_node"],
+                        )
+                    )
+                    if item.get("IsRead") is not True:
+                        unread_items.append((item, node_metadata))
+
+            threads.append(
+                {
+                    "conversation_id": conversation_id,
+                    "message_count": len(thread_messages),
+                    "messages": thread_messages,
+                }
+            )
+
+            thread_index_by_identity = {
+                (
+                    message.get("message_id")
+                    or message.get("internet_message_id")
+                    or message.get("instance_key")
+                    or f"{conversation_id}:{index}"
+                ): index
+                for index, message in enumerate(thread_messages)
+            }
+
+            for item, node_metadata in unread_items:
+                identity = message_identity(item, conversation_id)
+                if identity in seen_messages:
                     continue
-                message_id = item.get("ItemId", {}).get("Id")
-                if message_id and message_id in seen_message_ids:
-                    continue
-                if message_id:
-                    seen_message_ids.add(message_id)
-                emails.append(export_record(item, conversation_id, row))
+                seen_messages.add(identity)
+
+                record = build_message_record(
+                    item,
+                    conversation_id,
+                    instance_key=row.get("instance_key", ""),
+                    row_aria_label=row.get("aria_label", ""),
+                    parent_internet_message_id=node_metadata["parent_internet_message_id"],
+                    has_quoted_text=node_metadata["has_quoted_text"],
+                    is_root_node=node_metadata["is_root_node"],
+                )
+                record["thread_message_index"] = thread_index_by_identity.get(identity)
+                record["thread_message_count"] = len(thread_messages)
+                emails.append(record)
 
         payload = {
             "contract": CONTRACT_VERSION,
@@ -512,7 +608,9 @@ def run_export(args: argparse.Namespace) -> int:
             "mailbox_url": args.outlook_url,
             "profile_dir": str(profile_dir.resolve()),
             "email_count": len(emails),
+            "thread_count": len(threads),
             "emails": emails,
+            "threads": threads,
         }
         output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         print(f"Wrote {len(emails)} unread emails to {output_path}")

@@ -29,121 +29,20 @@
       "type": "integer",
       "minimum": 0
     },
+    "thread_count": {
+      "type": "integer",
+      "minimum": 0
+    },
     "emails": {
       "type": "array",
       "items": {
-        "type": "object",
-        "required": [
-          "message_id",
-          "subject",
-          "from",
-          "body",
-          "preview",
-          "can_rsvp",
-          "available_actions"
-        ],
-        "properties": {
-          "message_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "message_change_key": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "conversation_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "instance_key": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "item_class": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "is_read": {
-            "type": [
-              "boolean",
-              "null"
-            ]
-          },
-          "received_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "sent_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "from": {
-            "$ref": "#/$defs/mailbox"
-          },
-          "to": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/mailbox"
-            }
-          },
-          "cc": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/mailbox"
-            }
-          },
-          "bcc": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/mailbox"
-            }
-          },
-          "subject": {
-            "type": "string"
-          },
-          "body": {
-            "type": "string"
-          },
-          "body_html": {
-            "type": "string"
-          },
-          "preview": {
-            "type": "string"
-          },
-          "available_actions": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "can_rsvp": {
-            "type": "boolean"
-          },
-          "meeting": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "row_aria_label": {
-            "type": "string"
-          }
-        },
-        "additionalProperties": true
+        "$ref": "#/$defs/unread_email"
+      }
+    },
+    "threads": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/thread"
       }
     }
   },
@@ -166,6 +65,208 @@
         }
       },
       "additionalProperties": false
+    },
+    "message_core": {
+      "type": "object",
+      "required": [
+        "message_id",
+        "subject",
+        "from",
+        "body",
+        "body_scope",
+        "preview",
+        "can_rsvp",
+        "available_actions"
+      ],
+      "properties": {
+        "message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message_change_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "internet_message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parent_internet_message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conversation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conversation_thread_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instance_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "item_class": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "is_read": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "received_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sent_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from": {
+          "$ref": "#/$defs/mailbox"
+        },
+        "to": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/mailbox"
+          }
+        },
+        "cc": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/mailbox"
+          }
+        },
+        "bcc": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/mailbox"
+          }
+        },
+        "subject": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "body_html": {
+          "type": "string"
+        },
+        "body_scope": {
+          "type": "string"
+        },
+        "preview": {
+          "type": "string"
+        },
+        "available_actions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "can_rsvp": {
+          "type": "boolean"
+        },
+        "meeting": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "has_quoted_text": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "is_root_node": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "unread_email": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/message_core"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "row_aria_label": {
+              "type": "string"
+            },
+            "thread_message_index": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "thread_message_count": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "thread_message": {
+      "$ref": "#/$defs/message_core"
+    },
+    "thread": {
+      "type": "object",
+      "required": [
+        "conversation_id",
+        "message_count",
+        "messages"
+      ],
+      "properties": {
+        "conversation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/thread_message"
+          }
+        }
+      },
+      "additionalProperties": true
     }
   },
   "additionalProperties": true
