@@ -47,6 +47,8 @@ python surface search export \
   --headless
 ```
 
+If `OPENROUTER_API_KEY` is configured, the root CLI can also auto-run derived thread summarization after unread or search export unless `--skip-post-process` is set. That post-processing lives above the provider layer and writes a separate artifact, for example under `~/.surface/exports/derived/`.
+
 Multiple accounts are supported by using distinct account slugs through the root CLI:
 
 ```bash
@@ -71,6 +73,7 @@ python providers/outlook/export_unread_emails.py search-export --account work --
 
 - the account-scoped browser profile is stored under `~/.surface/accounts/outlook/<account>/profile/` when using the root CLI
 - exports are intended to be written outside git, for example under `~/.surface/exports/`
+- derived thread summaries are also intended to live outside git, for example under `~/.surface/exports/derived/`
 - set `SURFACE_HOME` if you want the root CLI to use a different state home
 - the output contract is `surface.unread_mail.v1`
 - `can_rsvp` indicates whether Outlook currently exposes RSVP actions for that message

@@ -16,10 +16,11 @@ Frontends should consume derived data from the backend rather than reimplement p
 
 ## Read First
 
-- [README.md](/Users/vishaljain/surface/README.md)
-- [docs/cli-architecture.md](/Users/vishaljain/surface/docs/cli-architecture.md)
-- [docs/provider-architecture.md](/Users/vishaljain/surface/docs/provider-architecture.md)
-- [contracts/unread-mail-v1.schema.json](/Users/vishaljain/surface/contracts/unread-mail-v1.schema.json)
+- [README.md](README.md)
+- [docs/cli-architecture.md](docs/cli-architecture.md)
+- [docs/provider-architecture.md](docs/provider-architecture.md)
+- [contracts/unread-mail-v1.schema.json](contracts/unread-mail-v1.schema.json)
+- [contracts/thread-summaries-v1.schema.json](contracts/thread-summaries-v1.schema.json)
 
 ## Current State
 
@@ -27,10 +28,18 @@ Frontends should consume derived data from the backend rather than reimplement p
 - Outlook search export is implemented.
 - Gmail unread export is implemented with the Gmail API and desktop OAuth.
 - The canonical export artifact is JSON.
+- OpenRouter-backed derived thread summarization is implemented through `surface filter apply`.
 - CSV is optional and should be treated as a convenience export, not the source of truth.
 - Provider session state and exports are sensitive and should not be committed.
 - The root CLI stores state outside the repo by default under `~/.surface/`.
 - `SURFACE_HOME` can override that root state directory.
+
+## Environment
+
+- Run repo-local Python and CLI commands in the `surface-app` Conda environment.
+- Prefer `conda run -n surface-app python surface ...` for one-off commands.
+- If you need the interpreter path, resolve it dynamically from Conda rather than hard-coding a machine-local path.
+- Do not assume the default `python` has Playwright or the other project dependencies installed.
 
 ## Current CLI
 
@@ -79,6 +88,16 @@ python surface search export \
   [--headless]
 ```
 
+Apply derived thread summarization to a raw export:
+
+```bash
+python surface filter apply \
+  --input /absolute/path/to/raw.json \
+  --output /absolute/path/to/thread-summaries.json \
+  [--backend openrouter] \
+  [--model qwen/qwen3.5-397b-a17b]
+```
+
 Current argument meanings:
 
 - `--provider`: provider id such as `outlook`
@@ -89,6 +108,10 @@ Current argument meanings:
 - `--mailbox-url`: provider mailbox entry URL
 - `--output`: optional JSON output path
 - `--headless`: run export without showing a browser window
+- `--skip-post-process`: disable automatic derived thread summarization even when `OPENROUTER_API_KEY` is configured
+- `--post-process-output`: optional path for the derived thread summary artifact
+- `--post-process-backend`: currently `openrouter`
+- `--post-process-model`: optional override for the LLM model used during post-processing
 
 Internally, Outlook still uses the provider-local implementation in `providers/outlook/export_unread_emails.py`.
 
@@ -131,6 +154,7 @@ Current Gmail auth/state notes:
 - Frontends and agents should target stable CLIs, not provider internals.
 - Raw unread export is distinct from filtered/frontend view data.
 - Raw search export is also distinct from filtered/frontend view data.
+- LLM backends such as OpenRouter are pipeline dependencies, not mail providers.
 
 ## Implementing A New Provider
 
@@ -140,8 +164,10 @@ When adding any future provider, use this insertion pattern:
 - root CLI dispatch belongs in `surface_cli/main.py`
 - account state belongs under `~/.surface/accounts/<provider>/<account>/`
 - raw exports belong under `~/.surface/exports/raw/`
+- derived thread summaries belong under `~/.surface/exports/derived/`
 - canonical unread output must match `contracts/unread-mail-v1.schema.json`
 - search export should preserve the same `emails[]` and `threads[]` shape when possible
+- derived thread summaries should match `contracts/thread-summaries-v1.schema.json`
 - JSON is required; CSV is optional and derived only
 
 Gmail implementation notes:
@@ -183,6 +209,7 @@ Recommended long-term layout:
 ```text
 surface/
   contracts/
+    thread-summaries-v1.schema.json
   docs/
   providers/
     outlook/
@@ -213,17 +240,18 @@ The repo should converge on a single root CLI, for example `surface` or `python 
 - `surface account list`
 - `surface unread export`
 - `surface search export`
+- `surface filter apply`
 - `surface action reply`
 - `surface action reply-all`
 - `surface action forward`
 - `surface action rsvp`
-- `surface filter apply`
 
 This now exists as the repo-local `surface` CLI entrypoint. Provider-local scripts remain implementation entrypoints behind it.
 
 ## Change Discipline
 
 - If you change the unread contract, update the schema and docs in the same change.
+- If you change the thread summaries contract, update the schema and docs in the same change.
 - Do not commit files under profile, token, export, or cache directories.
 - Prefer additive schema changes unless a breaking version bump is intentional.
 - Keep JSON as the canonical interchange format for agents and frontends.

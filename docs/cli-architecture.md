@@ -71,6 +71,7 @@ Provider-neutral schemas and typed data models.
 Responsibilities:
 
 - raw unread mail contract
+- thread summary contract
 - future filtered/view contract
 - future action request/result contracts
 
@@ -111,6 +112,7 @@ surface/
   README.md
   contracts/
     unread-mail-v1.schema.json
+    thread-summaries-v1.schema.json
     filtered-mail-v1.schema.json
     action-request-v1.schema.json
     action-result-v1.schema.json
@@ -152,6 +154,7 @@ Recommended default local state home:
         token.json
   exports/
     raw/
+    derived/
     filtered/
   rules/
     senders.json
@@ -177,11 +180,11 @@ surface account setup
 surface account list
 surface unread export
 surface search export
+surface filter apply
 surface action reply
 surface action reply-all
 surface action forward
 surface action rsvp
-surface filter apply
 ```
 
 Provider-local scripts can still exist for development and debugging, but they should become implementation details over time.
@@ -202,7 +205,7 @@ python surface --help
 
 ## Current CLI Reference
 
-Today the repo has a working root CLI with Outlook and Gmail `account setup` and `unread export` wired through it, plus Outlook `search export`.
+Today the repo has a working root CLI with Outlook and Gmail `account setup` and `unread export` wired through it, plus Outlook `search export` and a first pass of `filter apply` for derived thread summaries.
 
 ### Outlook setup
 
@@ -237,7 +240,11 @@ python surface unread export \
   --account imperial \
   [--output /absolute/path/to/unread.json] \
   [--mailbox-url https://outlook.office.com/mail/] \
-  [--headless]
+  [--headless] \
+  [--skip-post-process] \
+  [--post-process-output /absolute/path/to/thread-summaries.json] \
+  [--post-process-backend openrouter] \
+  [--post-process-model qwen/qwen3.5-397b-a17b]
 ```
 
 Arguments:
@@ -247,6 +254,10 @@ Arguments:
 - `--output`: optional path for the JSON unread export
 - `--mailbox-url`: mailbox entry URL override
 - `--headless`: run without displaying the browser
+- `--skip-post-process`: disable automatic derived thread summarization
+- `--post-process-output`: optional path for the derived summary artifact
+- `--post-process-backend`: currently `openrouter`
+- `--post-process-model`: optional LLM model override
 
 Behavior:
 
@@ -256,6 +267,7 @@ Behavior:
 - exhausts the filtered infinite-scroll list
 - fetches structured thread contents from the authenticated Outlook session
 - writes unread messages plus thread history into the shared JSON contract
+- when configured, invokes the pipeline layer after raw export to write a separate thread summary artifact
 
 ### Outlook search export
 
@@ -268,7 +280,11 @@ python surface search export \
   [--thread-depth all] \
   [--output /absolute/path/to/search.json] \
   [--mailbox-url https://outlook.office.com/mail/] \
-  [--headless]
+  [--headless] \
+  [--skip-post-process] \
+  [--post-process-output /absolute/path/to/thread-summaries.json] \
+  [--post-process-backend openrouter] \
+  [--post-process-model qwen/qwen3.5-397b-a17b]
 ```
 
 Arguments:
@@ -281,6 +297,10 @@ Arguments:
 - `--output`: optional path for the JSON search export
 - `--mailbox-url`: mailbox entry URL override
 - `--headless`: run without displaying the browser
+- `--skip-post-process`: disable automatic derived thread summarization
+- `--post-process-output`: optional path for the derived summary artifact
+- `--post-process-backend`: currently `openrouter`
+- `--post-process-model`: optional LLM model override
 
 Behavior:
 
@@ -290,6 +310,7 @@ Behavior:
 - collects the returned top-level result rows in list order
 - fetches structured thread contents from the authenticated Outlook session
 - writes the same `emails[]` and `threads[]` shape as unread export, with extra top-level search metadata
+- when configured, invokes the pipeline layer after raw export to write a separate thread summary artifact
 
 ### Outlook multi-account example
 
@@ -390,7 +411,7 @@ Expected local state layout:
 
 ### Reserved root CLI commands
 
-The root shape is now fixed even though some commands are still stubs:
+The root shape is now fixed even though the action commands are still stubs:
 
 ```bash
 python surface action reply ...
@@ -400,7 +421,6 @@ python surface action rsvp ...
 python surface action mark-read ...
 python surface action archive ...
 python surface action delete ...
-python surface filter apply ...
 ```
 
 These currently return explicit "not implemented yet" errors.
@@ -509,6 +529,35 @@ Recommended output fields:
 - truncation metadata
 - export timestamp
 
+### Filter apply CLI
+
+These commands build derived thread summaries from raw unread or search exports.
+
+Examples:
+
+```bash
+surface filter apply --input ~/.surface/exports/raw/outlook-work-search.json --output ~/.surface/exports/derived/outlook-work-search-thread-summaries.json --backend openrouter
+```
+
+Recommended arguments:
+
+- `--input`
+- `--output`
+- `--backend`
+- `--model`
+- `--max-context-tokens`
+- `--target-input-tokens`
+- `--max-output-tokens`
+
+Current behavior:
+
+- reads a raw export contract from disk
+- groups work by whole thread so a thread is never split across LLM calls
+- packs as many threads as fit within a padded token budget
+- calls the configured LLM backend, currently OpenRouter
+- writes `surface.thread_summaries.v1` as a separate derived artifact
+- if some chunks fail, still writes a valid JSON artifact with `status: partial|failed` and chunk-level failure metadata
+
 ## Action CLI
 
 This is the long-term automation surface for agents.
@@ -567,21 +616,29 @@ Recommended pipeline:
 6. Attach summaries if enabled.
 7. Write a derived filtered view contract for the frontend.
 
-Recommended future command:
+Current first-step command:
 
 ```bash
 surface filter apply \
   --input ~/.surface/exports/raw/outlook-imperial.json \
-  --output ~/.surface/exports/filtered/outlook-imperial.json
+  --output ~/.surface/exports/derived/outlook-imperial-thread-summaries.json \
+  --backend openrouter
 ```
 
-Or for a merged inbox:
+This first implementation focuses on LLM-derived thread summaries. The broader filtered inbox contract can build on top of this later.
+
+When `OPENROUTER_API_KEY` is configured, `surface unread export` and `surface search export` also auto-run the same post-processing step unless `--skip-post-process` is set.
+
+Current implementation details:
 
 ```bash
-surface filter apply \
-  --input-glob '~/.surface/exports/raw/*.json' \
-  --output ~/.surface/exports/filtered/unified.json
+# repo-local .env support
+OPENROUTER_API_KEY=...
+SURFACE_POST_PROCESS_BACKEND=openrouter
+SURFACE_POST_PROCESS_MODEL=qwen/qwen3.5-397b-a17b
 ```
+
+Token packing should intentionally stay below the advertised model context limit. A padded target such as `0.85 * MAX_CONTEXT_TOKENS` is reasonable because local estimates are not exact and the model still needs room to emit JSON output.
 
 ## Menu Bar App Responsibilities
 

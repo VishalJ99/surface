@@ -42,6 +42,12 @@ Provider-local scripts are still acceptable as internal entrypoints while the re
 
 Search export can add top-level query metadata, but should keep the same `emails[]` and `threads[]` structure so downstream consumers can reuse the same parsing logic.
 
+Derived LLM summaries should not be produced inside provider code.
+
+- mail providers remain things like `outlook` and `gmail`
+- LLM backends such as OpenRouter belong to the pipeline layer, not the provider layer
+- post-processing should consume exported JSON and emit a separate derived contract
+
 ## New Provider Checklist
 
 When implementing Gmail or another provider:
@@ -51,6 +57,7 @@ When implementing Gmail or another provider:
 - keep account state under `~/.surface/accounts/<provider>/<account>/`
 - emit JSON that matches `contracts/unread-mail-v1.schema.json`
 - treat CSV as optional derived output only, not the source of truth
+- keep LLM/post-processing logic outside `providers/<provider>/`
 - update docs and contract files in the same change if the unread shape changes
 
 For Gmail specifically, the current root CLI setup flow is:

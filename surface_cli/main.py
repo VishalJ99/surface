@@ -9,11 +9,37 @@ from pathlib import Path
 from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+
+
+def load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        value = value.strip()
+        if value and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ[key] = value
+
+
+load_env_file(ROOT_DIR / ".env")
+
 DEFAULT_SURFACE_HOME = Path.home() / ".surface"
 SURFACE_HOME = Path(os.environ.get("SURFACE_HOME", str(DEFAULT_SURFACE_HOME))).expanduser()
 ACCOUNTS_DIR = SURFACE_HOME / "accounts"
 EXPORTS_DIR = SURFACE_HOME / "exports"
 RAW_EXPORTS_DIR = EXPORTS_DIR / "raw"
+DERIVED_EXPORTS_DIR = EXPORTS_DIR / "derived"
 PROVIDERS_DIR = SURFACE_HOME / "providers"
 
 SUPPORTED_PROVIDERS = ("outlook", "gmail")
@@ -53,6 +79,10 @@ def default_raw_export_path(provider: str, account: str) -> Path:
 
 def default_search_export_path(provider: str, account: str) -> Path:
     return RAW_EXPORTS_DIR / f"{provider}-{account}-search-{utc_filename_now()}.json"
+
+
+def default_thread_summaries_path(raw_output_path: Path) -> Path:
+    return DERIVED_EXPORTS_DIR / f"{raw_output_path.stem}-thread-summaries.json"
 
 
 def outlook_profile_dir(provider: str, account: str) -> Path:
@@ -188,6 +218,12 @@ def gmail_unread_module():
     return gmail_unread
 
 
+def post_process_module():
+    from surface_cli import post_process
+
+    return post_process
+
+
 def handle_account_setup(args: argparse.Namespace) -> int:
     confirm_setup_overwrite(args.provider, args.account)
     existing = load_account_config(args.provider, args.account)
@@ -297,31 +333,38 @@ def handle_account_reauth(args: argparse.Namespace) -> int:
 
 def handle_unread_export(args: argparse.Namespace) -> int:
     config = ensure_account_exists(args.provider, args.account)
+    output_path = Path(args.output or default_raw_export_path(args.provider, args.account))
 
     if args.provider == "gmail":
         gmail_unread = gmail_unread_module()
-        output_path = args.output or default_raw_export_path(args.provider, args.account)
         provider_args = argparse.Namespace(
             account=args.account,
             token_path=gmail_token_path(args.provider, args.account),
-            output=Path(output_path),
+            output=output_path,
         )
-        return gmail_unread.run_export(provider_args)
+        result = gmail_unread.run_export(provider_args)
+        if result != 0:
+            return result
+        maybe_run_post_process_after_export(args, output_path)
+        return 0
 
     if args.provider != "outlook":
         raise SystemExit(f"Unsupported provider: {args.provider}")
 
     outlook = outlook_module()
-    output_path = args.output or default_raw_export_path(args.provider, args.account)
     mailbox_url = provider_mailbox_url(args, config, default=outlook.DEFAULT_OUTLOOK_URL)
     provider_args = argparse.Namespace(
         account=args.account,
         profile_dir=outlook_profile_dir(args.provider, args.account),
         outlook_url=mailbox_url,
-        output=Path(output_path),
+        output=output_path,
         headless=args.headless,
     )
-    return outlook.run_export(provider_args)
+    result = outlook.run_export(provider_args)
+    if result != 0:
+        return result
+    maybe_run_post_process_after_export(args, output_path)
+    return 0
 
 
 def handle_search_export(args: argparse.Namespace) -> int:
@@ -331,7 +374,7 @@ def handle_search_export(args: argparse.Namespace) -> int:
         raise SystemExit("Search export is currently implemented only for Outlook.")
 
     outlook = outlook_module()
-    output_path = args.output or default_search_export_path(args.provider, args.account)
+    output_path = Path(args.output or default_search_export_path(args.provider, args.account))
     mailbox_url = provider_mailbox_url(args, config, default=outlook.DEFAULT_OUTLOOK_URL)
     provider_args = argparse.Namespace(
         account=args.account,
@@ -343,7 +386,11 @@ def handle_search_export(args: argparse.Namespace) -> int:
         thread_depth=args.thread_depth,
         headless=args.headless,
     )
-    return outlook.run_search_export(provider_args)
+    result = outlook.run_search_export(provider_args)
+    if result != 0:
+        return result
+    maybe_run_post_process_after_export(args, output_path)
+    return 0
 
 
 def handle_action_stub(args: argparse.Namespace) -> int:
@@ -354,7 +401,66 @@ def handle_action_stub(args: argparse.Namespace) -> int:
 
 
 def handle_filter_apply(args: argparse.Namespace) -> int:
-    raise SystemExit("`surface filter apply` is not implemented yet.")
+    post_process = post_process_module()
+    result = post_process.run_post_process(
+        input_path=args.input,
+        output_path=args.output,
+        requested_backend=args.backend,
+        requested_model=args.model,
+        max_context_tokens=args.max_context_tokens,
+        target_input_tokens=args.target_input_tokens,
+        max_output_tokens=args.max_output_tokens,
+        require_configured_backend=True,
+    )
+    print(
+        f"Wrote {result.status} thread summaries to {result.output_path} "
+        f"({result.summary_count} summaries across {result.chunk_count} chunks)"
+    )
+    return 0 if result.status == "complete" else 1
+
+
+def add_post_process_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--skip-post-process", action="store_true")
+    parser.add_argument("--post-process-output", type=Path)
+    parser.add_argument("--post-process-backend", choices=("openrouter",))
+    parser.add_argument("--post-process-model")
+
+
+def maybe_run_post_process_after_export(args: argparse.Namespace, raw_output_path: Path) -> None:
+    if getattr(args, "skip_post_process", False):
+        return
+
+    post_process = post_process_module()
+    explicit_configuration = any(
+        getattr(args, attribute_name, None)
+        for attribute_name in ("post_process_output", "post_process_backend", "post_process_model")
+    )
+    output_path = Path(args.post_process_output or default_thread_summaries_path(raw_output_path))
+    try:
+        result = post_process.run_post_process(
+            input_path=raw_output_path,
+            output_path=output_path,
+            requested_backend=args.post_process_backend,
+            requested_model=args.post_process_model,
+            require_configured_backend=explicit_configuration,
+        )
+    except RuntimeError as exc:
+        print(f"Warning: post-processing skipped for {raw_output_path}: {exc}", file=sys.stderr)
+        return
+
+    if result.skipped:
+        return
+
+    print(
+        f"Wrote {result.status} thread summaries to {result.output_path} "
+        f"({result.summary_count} summaries across {result.chunk_count} chunks)"
+    )
+    if result.status != "complete":
+        print(
+            f"Warning: post-processing finished with status {result.status}. "
+            f"See {result.output_path} for chunk-level details.",
+            file=sys.stderr,
+        )
 
 
 def add_provider_account_args(parser: argparse.ArgumentParser) -> None:
@@ -416,6 +522,7 @@ def build_parser() -> argparse.ArgumentParser:
     unread_export.add_argument("--output", type=Path)
     unread_export.add_argument("--mailbox-url")
     unread_export.add_argument("--headless", action="store_true")
+    add_post_process_args(unread_export)
     unread_export.set_defaults(handler=handle_unread_export)
 
     search_parser = subparsers.add_parser("search", help="Export raw mail search results.")
@@ -429,6 +536,7 @@ def build_parser() -> argparse.ArgumentParser:
     search_export.add_argument("--thread-depth", default="all")
     search_export.add_argument("--mailbox-url")
     search_export.add_argument("--headless", action="store_true")
+    add_post_process_args(search_export)
     search_export.set_defaults(handler=handle_search_export)
 
     action_parser = subparsers.add_parser("action", help="Run provider-backed mail actions.")
@@ -455,6 +563,11 @@ def build_parser() -> argparse.ArgumentParser:
     filter_apply = filter_subparsers.add_parser("apply", help="Apply blocking/classification rules to raw exports.")
     filter_apply.add_argument("--input", type=Path, required=True)
     filter_apply.add_argument("--output", type=Path, required=True)
+    filter_apply.add_argument("--backend", choices=("openrouter",))
+    filter_apply.add_argument("--model")
+    filter_apply.add_argument("--max-context-tokens", type=positive_int, default=128000)
+    filter_apply.add_argument("--target-input-tokens", type=positive_int, default=int(128000 * 0.85))
+    filter_apply.add_argument("--max-output-tokens", type=positive_int, default=4096)
     filter_apply.set_defaults(handler=handle_filter_apply)
 
     return parser

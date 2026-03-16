@@ -45,19 +45,63 @@ python surface account inspect --provider outlook --account imperial
 python surface unread export --provider outlook --account imperial --headless
 python surface search export --provider outlook --account work --query josh --max-results 50 --headless
 python surface unread export --provider gmail --account personal
+python surface filter apply --input ~/.surface/exports/raw/outlook-work-search.json --output ~/.surface/exports/derived/outlook-work-search-thread-summaries.json --backend openrouter
 ```
 
 Reserved for the next phase:
 
 ```bash
 python surface action ...
-python surface filter apply ...
 ```
 
 The unread export contract lives in `contracts/unread-mail-v1.schema.json`.
 Outlook search export currently reuses the same `emails[]` and `threads[]` shape, with top-level search metadata added for query-specific exports.
+Derived thread summaries live in `contracts/thread-summaries-v1.schema.json`.
 
 By default, the root CLI stores account state, browser profiles, tokens, and default exports under `~/.surface/`. You can override that location with the `SURFACE_HOME` environment variable.
+
+## Optional LLM Post-Processing
+
+Surface can now build a derived per-thread summary artifact from a raw unread or search export.
+
+Current implementation notes:
+
+- only OpenRouter is implemented today as the LLM backend
+- the raw export stays canonical and unchanged
+- the derived summary artifact is written separately under `~/.surface/exports/derived/` by default
+- `python surface unread export ...` and `python surface search export ...` will auto-run post-processing when `OPENROUTER_API_KEY` is configured unless `--skip-post-process` is set
+- the canonical manual entrypoint is `python surface filter apply --input ... --output ...`
+
+You can configure the backend through environment variables or a repo-local `.env` file. See `.env.example` for the supported keys.
+
+Example `.env`:
+
+```bash
+OPENROUTER_API_KEY=your_key_here
+SURFACE_POST_PROCESS_BACKEND=openrouter
+SURFACE_POST_PROCESS_MODEL=qwen/qwen3.5-397b-a17b
+```
+
+Example manual run:
+
+```bash
+python surface filter apply \
+  --input ~/.surface/exports/raw/outlook-work-search.json \
+  --output ~/.surface/exports/derived/outlook-work-search-thread-summaries.json \
+  --backend openrouter
+```
+
+Example export-time override:
+
+```bash
+python surface search export \
+  --provider outlook \
+  --account work \
+  --query pizza \
+  --post-process-model qwen/qwen3.5-397b-a17b \
+  --post-process-output ~/.surface/exports/derived/outlook-work-search-thread-summaries.json \
+  --headless
+```
 
 ## Outlook Today
 
@@ -117,6 +161,7 @@ The Outlook exporter:
 - can also execute a mailbox search query and export the returned top-level result rows
 - fetches structured message and thread data from the authenticated Outlook session
 - writes JSON in the shared unread-mail contract shape
+- can optionally auto-run derived thread summarization after raw export through the root CLI
 - includes whether a message currently exposes RSVP actions
 
 ## Gmail Today
@@ -169,6 +214,7 @@ For local testing with unverified OAuth credentials, add the Gmail accounts you 
 
 ## Notes
 
+- `.env` is ignored by git; use `.env.example` as the documented template
 - `providers/*/.profiles/` is ignored because it contains browser session state.
 - `providers/*/exports/` is ignored because exports can contain sensitive mail data.
 - the frontend is intentionally not in this repo yet; the contract comes first
