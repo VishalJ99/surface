@@ -1,6 +1,6 @@
 # Outlook Provider
 
-This provider exports unread Outlook Web mail into the shared Surface contract.
+This provider exports Outlook Web unread mail and search results into the shared Surface contract shape.
 
 ## Why Browser Automation
 

@@ -1,6 +1,6 @@
 # Surface App
 
-Surface App is a provider-first mail backend for a future macOS menu bar app. Each provider exports unread email into the same JSON contract so the UI layer can stay simple.
+Surface App is a provider-first mail backend for a future macOS menu bar app. Providers export raw mailbox data into a shared JSON shape so the UI layer can stay simple.
 
 Primary docs:
 
@@ -54,7 +54,8 @@ python surface action ...
 python surface filter apply ...
 ```
 
-The output contract lives in `contracts/unread-mail-v1.schema.json`.
+The unread export contract lives in `contracts/unread-mail-v1.schema.json`.
+Outlook search export currently reuses the same `emails[]` and `threads[]` shape, with top-level search metadata added for query-specific exports.
 
 By default, the root CLI stores account state, browser profiles, tokens, and default exports under `~/.surface/`. You can override that location with the `SURFACE_HOME` environment variable.
 
@@ -149,6 +150,7 @@ python surface account setup \
 
 Export:
 
+```bash
 python surface unread export \
   --provider gmail \
   --account personal \

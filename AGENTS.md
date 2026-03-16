@@ -8,6 +8,7 @@ The backend is the automation surface. Agents should be able to:
 
 - set up provider accounts
 - export raw unread mail
+- search mail and export raw search results
 - run mail actions such as reply or archive
 - apply filtering and summarization layers
 
@@ -23,6 +24,7 @@ Frontends should consume derived data from the backend rather than reimplement p
 ## Current State
 
 - Outlook unread export is implemented.
+- Outlook search export is implemented.
 - Gmail unread export is implemented with the Gmail API and desktop OAuth.
 - The canonical export artifact is JSON.
 - CSV is optional and should be treated as a convenience export, not the source of truth.
@@ -63,10 +65,27 @@ python surface unread export \
   [--headless]
 ```
 
+Export search results:
+
+```bash
+python surface search export \
+  --provider outlook \
+  --account imperial \
+  --query "josh" \
+  [--max-results 50] \
+  [--thread-depth all] \
+  [--output /absolute/path/to/search.json] \
+  [--mailbox-url https://outlook.office.com/mail/] \
+  [--headless]
+```
+
 Current argument meanings:
 
 - `--provider`: provider id such as `outlook`
 - `--account`: local account slug such as `imperial`
+- `--query`: mailbox search term for `surface search export`
+- `--max-results`: optional cap on top-level search result rows
+- `--thread-depth`: `all` or a positive integer limit for messages returned per thread
 - `--mailbox-url`: provider mailbox entry URL
 - `--output`: optional JSON output path
 - `--headless`: run export without showing a browser window
@@ -111,6 +130,7 @@ Current Gmail auth/state notes:
 - Shared contracts stay in `contracts/`.
 - Frontends and agents should target stable CLIs, not provider internals.
 - Raw unread export is distinct from filtered/frontend view data.
+- Raw search export is also distinct from filtered/frontend view data.
 
 ## Implementing A New Provider
 
@@ -121,6 +141,7 @@ When adding any future provider, use this insertion pattern:
 - account state belongs under `~/.surface/accounts/<provider>/<account>/`
 - raw exports belong under `~/.surface/exports/raw/`
 - canonical unread output must match `contracts/unread-mail-v1.schema.json`
+- search export should preserve the same `emails[]` and `threads[]` shape when possible
 - JSON is required; CSV is optional and derived only
 
 Gmail implementation notes:
@@ -191,6 +212,7 @@ The repo should converge on a single root CLI, for example `surface` or `python 
 - `surface account setup`
 - `surface account list`
 - `surface unread export`
+- `surface search export`
 - `surface action reply`
 - `surface action reply-all`
 - `surface action forward`

@@ -176,6 +176,7 @@ Example command family:
 surface account setup
 surface account list
 surface unread export
+surface search export
 surface action reply
 surface action reply-all
 surface action forward
@@ -201,7 +202,7 @@ python surface --help
 
 ## Current CLI Reference
 
-Today the repo has a working root CLI with Outlook and Gmail `account setup` and `unread export` wired through it.
+Today the repo has a working root CLI with Outlook and Gmail `account setup` and `unread export` wired through it, plus Outlook `search export`.
 
 ### Outlook setup
 
@@ -475,6 +476,37 @@ Recommended output fields:
 - unread emails
 - thread history
 - action affordances
+- export timestamp
+
+### Search export CLI
+
+These commands fetch raw mailbox search results for a specific account.
+
+Examples:
+
+```bash
+surface search export --provider outlook --account work --query josh --output state/exports/raw/outlook-work-search.json
+```
+
+Recommended arguments:
+
+- `--provider`
+- `--account`
+- `--query`
+- `--max-results`
+- `--thread-depth`
+- `--output`
+- `--headless` where relevant
+
+Recommended output fields:
+
+- provider
+- account
+- emails
+- thread history
+- search query
+- selection mode
+- truncation metadata
 - export timestamp
 
 ## Action CLI

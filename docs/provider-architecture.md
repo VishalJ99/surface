@@ -2,7 +2,7 @@
 
 Surface App is being built contract-first.
 
-The rule is simple: every mail provider should export unread email into the same JSON shape before any frontend work begins.
+The rule is simple: every mail provider should export raw mailbox data into a provider-neutral JSON shape before any frontend work begins.
 
 The development environment is shared across providers through the repo-level `environment.yml`.
 
@@ -24,6 +24,7 @@ Providers should plug into commands shaped like:
 ```bash
 python surface account setup --provider <provider> --account <account>
 python surface unread export --provider <provider> --account <account> --output /absolute/path/to/unread.json
+python surface search export --provider <provider> --account <account> --query "term" --output /absolute/path/to/search.json
 ```
 
 Provider-local scripts are still acceptable as internal entrypoints while the repo is being refactored.
@@ -33,11 +34,13 @@ Provider-local scripts are still acceptable as internal entrypoints while the re
 - Outlook: sign in once with an account-scoped dedicated browser profile
 - Gmail: seed one shared `client_secret.json` for the provider, then complete desktop OAuth per account and cache each refresh token in `token.json`
 
-`export` should always produce the same contract:
+`export` should always produce the same core message and thread shape:
 
-- unread messages only
+- unread export remains unread-only
 - no attachments in v1
 - include enough metadata for the future UI to show quick actions such as RSVP
+
+Search export can add top-level query metadata, but should keep the same `emails[]` and `threads[]` structure so downstream consumers can reuse the same parsing logic.
 
 ## New Provider Checklist
 
