@@ -6,6 +6,7 @@
   "required": [
     "contract",
     "provider",
+    "account",
     "email_count",
     "emails"
   ],
@@ -16,10 +17,10 @@
     "provider": {
       "type": "string"
     },
-    "source": {
+    "account": {
       "type": "string"
     },
-    "mailbox_url": {
+    "source": {
       "type": "string"
     },
     "profile_dir": {

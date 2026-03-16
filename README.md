@@ -11,8 +11,7 @@ Primary docs:
 The current focus is backend only:
 
 - stabilize the unread-mail export contract
-- support Outlook first
-- add Gmail next
+- support Outlook and Gmail
 - build the menu bar frontend after both providers can emit the same shape
 
 ## Repo Shape
@@ -40,9 +39,12 @@ Implemented today:
 
 ```bash
 python surface account setup --provider outlook --account imperial
+python surface account setup --provider gmail --account personal --client-secret-file /absolute/path/to/credentials.json
 python surface account list
 python surface account inspect --provider outlook --account imperial
 python surface unread export --provider outlook --account imperial --headless
+python surface search export --provider outlook --account work --query josh --max-results 50 --headless
+python surface unread export --provider gmail --account personal
 ```
 
 Reserved for the next phase:
@@ -81,6 +83,19 @@ python surface unread export \
   --headless
 ```
 
+Search mail with the same message and thread shape:
+
+```bash
+python surface search export \
+  --provider outlook \
+  --account work \
+  --query josh \
+  --max-results 50 \
+  --thread-depth all \
+  --output ~/.surface/exports/raw/outlook-work-search.json \
+  --headless
+```
+
 To test multiple Outlook accounts, use different `--account` values. Each account gets its own persistent browser profile:
 
 ```bash
@@ -98,21 +113,57 @@ The Outlook exporter:
 - reuses an account-scoped Chrome profile
 - applies the `Unread` filter in Outlook Web
 - exhausts the filtered unread list
+- can also execute a mailbox search query and export the returned top-level result rows
 - fetches structured message and thread data from the authenticated Outlook session
-- writes JSON in the shared unread-mail contract
+- writes JSON in the shared unread-mail contract shape
 - includes whether a message currently exposes RSVP actions
 
-## Gmail Next
+## Gmail Today
 
-Gmail should use the Gmail API with OAuth desktop sign-in and a cached refresh token. It should not need browser automation unless a specific account restriction forces it.
+Gmail uses the Gmail API with desktop OAuth sign-in and a cached refresh token. It does not use browser automation for mailbox fetches.
 
-That means the likely Gmail setup flow is:
+Quick start:
 
 1. create a Google Cloud project
 2. enable the Gmail API
 3. create OAuth desktop credentials
-4. run `setup` once to sign in and cache the token locally
-5. use `export` normally after that
+4. seed Surface with that app credential once
+5. run Gmail account setup for each Gmail account you want to connect
+
+First machine/app bootstrap:
+
+```bash
+python surface account setup \
+  --provider gmail \
+  --account personal \
+  --client-secret-file /absolute/path/to/credentials.json
+```
+
+Later Gmail accounts on the same machine:
+
+```bash
+python surface account setup \
+  --provider gmail \
+  --account work
+```
+
+Export:
+
+python surface unread export \
+  --provider gmail \
+  --account personal \
+  --output ~/.surface/exports/raw/gmail-personal-unread.json
+```
+
+The Gmail provider:
+
+- stores account config under `~/.surface/accounts/gmail/<account>/config.json`
+- stores the shared OAuth client credentials under `~/.surface/providers/gmail/client_secret.json`
+- stores the refreshable user token under `~/.surface/accounts/gmail/<account>/token.json`
+- fetches unread mail programmatically from the Gmail API
+- expands each unread message into thread history in the shared unread-mail contract
+
+For local testing with unverified OAuth credentials, add the Gmail accounts you want to use as Google OAuth test users.
 
 ## Notes
 

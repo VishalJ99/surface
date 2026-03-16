@@ -138,6 +138,9 @@ Recommended default local state home:
 
 ```text
 ~/.surface/
+  providers/
+    gmail/
+      client_secret.json
   accounts/
     outlook/
       imperial/
@@ -198,7 +201,7 @@ python surface --help
 
 ## Current CLI Reference
 
-Today the repo has a working root CLI with Outlook `account setup` and `unread export` wired through it.
+Today the repo has a working root CLI with Outlook and Gmail `account setup` and `unread export` wired through it.
 
 ### Outlook setup
 
@@ -253,6 +256,40 @@ Behavior:
 - fetches structured thread contents from the authenticated Outlook session
 - writes unread messages plus thread history into the shared JSON contract
 
+### Outlook search export
+
+```bash
+python surface search export \
+  --provider outlook \
+  --account work \
+  --query josh \
+  [--max-results 50] \
+  [--thread-depth all] \
+  [--output /absolute/path/to/search.json] \
+  [--mailbox-url https://outlook.office.com/mail/] \
+  [--headless]
+```
+
+Arguments:
+
+- `--provider`: currently `outlook`
+- `--account`: local account slug
+- `--query`: search term entered into the Outlook search box
+- `--max-results`: optional cap on returned top-level search results
+- `--thread-depth`: `all` or a positive integer limit for messages included per thread
+- `--output`: optional path for the JSON search export
+- `--mailbox-url`: mailbox entry URL override
+- `--headless`: run without displaying the browser
+
+Behavior:
+
+- resolves the account-scoped profile path from `provider + account`
+- opens Outlook Web with the saved profile
+- enters the search term into the Outlook search box
+- collects the returned top-level result rows in list order
+- fetches structured thread contents from the authenticated Outlook session
+- writes the same `emails[]` and `threads[]` shape as unread export, with extra top-level search metadata
+
 ### Outlook multi-account example
 
 The current Outlook implementation should support multiple accounts by assigning each one a separate account slug and therefore a separate persistent Chrome profile.
@@ -278,6 +315,76 @@ Expected local state layout:
 ~/.surface/accounts/outlook/personal/profile/
 ~/.surface/exports/raw/outlook-work-unread.json
 ~/.surface/exports/raw/outlook-personal-unread.json
+```
+
+### Gmail setup
+
+```bash
+python surface account setup \
+  --provider gmail \
+  --account personal
+```
+
+Arguments:
+
+- `--provider`: `gmail`
+- `--account`: local account slug
+- `--label`: optional display label stored in account config
+- `--client-secret-file`: optional first-run bootstrap path for the shared Google OAuth desktop credentials JSON. You can also set `SURFACE_GMAIL_CLIENT_SECRET_FILE`.
+
+Behavior:
+
+- creates or updates local account config under `~/.surface/accounts/`
+- on the first Gmail setup, copies OAuth desktop client credentials into `~/.surface/providers/gmail/client_secret.json`
+- opens a browser for Google sign-in and consent
+- saves a refreshable Gmail token under `~/.surface/accounts/gmail/<account>/token.json`
+- if the same `provider/account` already exists, prints a warning and requires pressing Enter before continuing
+
+First Gmail bootstrap example:
+
+```bash
+python surface account setup \
+  --provider gmail \
+  --account personal \
+  --client-secret-file /absolute/path/to/credentials.json
+```
+
+Second Gmail account on the same machine:
+
+```bash
+python surface account setup \
+  --provider gmail \
+  --account work
+```
+
+### Gmail unread export
+
+```bash
+python surface unread export \
+  --provider gmail \
+  --account personal \
+  [--output /absolute/path/to/unread.json]
+```
+
+Arguments:
+
+- `--provider`: `gmail`
+- `--account`: local account slug
+- `--output`: optional path for the JSON unread export
+
+Behavior:
+
+- loads and refreshes the cached Gmail OAuth token when needed
+- lists unread Gmail messages programmatically
+- fetches full thread contents for threads containing unread mail
+- writes unread messages plus thread history into the shared JSON contract
+
+Expected local state layout:
+
+```text
+~/.surface/providers/gmail/client_secret.json
+~/.surface/accounts/gmail/personal/token.json
+~/.surface/exports/raw/gmail-personal-unread.json
 ```
 
 ### Reserved root CLI commands
@@ -335,12 +442,12 @@ Recommended arguments:
 - `--provider`: required provider id such as `outlook` or `gmail`
 - `--account`: required local account slug such as `imperial`
 - `--label`: optional display label
-- `--config`: optional path to provider-specific config
+- `--client-secret-file`: optional first-run Gmail OAuth desktop client credentials JSON
 
 Behavior by provider:
 
 - Outlook: launch browser profile setup and store profile under account state
-- Gmail: complete OAuth once and store refresh token under account state
+- Gmail: seed one shared `client_secret.json` at provider scope, then store a refresh token per account
 
 ### Unread export CLI
 

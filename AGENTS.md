@@ -23,7 +23,7 @@ Frontends should consume derived data from the backend rather than reimplement p
 ## Current State
 
 - Outlook unread export is implemented.
-- Gmail is planned but not implemented in this repo yet.
+- Gmail unread export is implemented with the Gmail API and desktop OAuth.
 - The canonical export artifact is JSON.
 - CSV is optional and should be treated as a convenience export, not the source of truth.
 - Provider session state and exports are sensitive and should not be committed.
@@ -75,18 +75,62 @@ Internally, Outlook still uses the provider-local implementation in `providers/o
 
 ### Gmail
 
-Not implemented yet. Do not assume a runnable Gmail CLI exists.
+Setup:
+
+```bash
+python surface account setup \
+  --provider gmail \
+  --account personal \
+  [--client-secret-file /absolute/path/to/credentials.json]
+```
+
+Export unread mail:
+
+```bash
+python surface unread export \
+  --provider gmail \
+  --account personal \
+  [--output /absolute/path/to/unread.json]
+```
+
+Current Gmail auth/state notes:
+
+- `--client-secret-file` is only needed the first time to seed the shared Google OAuth desktop credentials JSON
+- `SURFACE_GMAIL_CLIENT_SECRET_FILE` can provide that same first-run file
+- shared OAuth client credentials are stored under `~/.surface/providers/gmail/client_secret.json`
+- refreshable user token state is stored under `~/.surface/accounts/gmail/<account>/token.json`
+- unread export is programmatic through the Gmail API, not browser automation
 
 ## Architecture Rules
 
 - Use `account`, not `user`, as the mailbox identity term.
 - An account is provider-scoped, for example `outlook/work` or `gmail/personal`.
-- Provider auth/state should be account-specific.
+- User auth tokens should be account-specific. Shared provider OAuth app credentials can live at provider scope.
 - Root CLI state should live under `~/.surface/` by default, not inside the git repo.
 - Provider quirks stay inside `providers/<provider>/`.
 - Shared contracts stay in `contracts/`.
 - Frontends and agents should target stable CLIs, not provider internals.
 - Raw unread export is distinct from filtered/frontend view data.
+
+## Implementing A New Provider
+
+When adding any future provider, use this insertion pattern:
+
+- provider-specific logic belongs under `providers/<provider>/`
+- root CLI dispatch belongs in `surface_cli/main.py`
+- account state belongs under `~/.surface/accounts/<provider>/<account>/`
+- raw exports belong under `~/.surface/exports/raw/`
+- canonical unread output must match `contracts/unread-mail-v1.schema.json`
+- JSON is required; CSV is optional and derived only
+
+Gmail implementation notes:
+
+- Gmail account setup lives behind `python surface account setup --provider gmail --account <account>`
+- Gmail unread export lives behind `python surface unread export --provider gmail --account <account>`
+- Gmail OAuth user tokens are account-specific under `~/.surface/accounts/gmail/<account>/`
+- Gmail OAuth app credentials are shared under `~/.surface/providers/gmail/`
+- do not make agents or frontends call provider-local modules directly
+- update docs and the schema in the same change if the contract changes
 
 ## Action Boundaries
 

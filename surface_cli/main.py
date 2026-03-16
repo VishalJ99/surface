@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ SURFACE_HOME = Path(os.environ.get("SURFACE_HOME", str(DEFAULT_SURFACE_HOME))).e
 ACCOUNTS_DIR = SURFACE_HOME / "accounts"
 EXPORTS_DIR = SURFACE_HOME / "exports"
 RAW_EXPORTS_DIR = EXPORTS_DIR / "raw"
+PROVIDERS_DIR = SURFACE_HOME / "providers"
 
 SUPPORTED_PROVIDERS = ("outlook", "gmail")
 ACTION_COMMANDS = ("reply", "reply-all", "forward", "rsvp", "mark-read", "archive", "delete")
@@ -20,6 +22,17 @@ ACTION_COMMANDS = ("reply", "reply-all", "forward", "rsvp", "mark-read", "archiv
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def utc_filename_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be greater than 0")
+    return parsed
 
 
 def account_dir(provider: str, account: str) -> Path:
@@ -30,8 +43,16 @@ def account_config_path(provider: str, account: str) -> Path:
     return account_dir(provider, account) / "config.json"
 
 
+def provider_state_dir(provider: str) -> Path:
+    return PROVIDERS_DIR / provider
+
+
 def default_raw_export_path(provider: str, account: str) -> Path:
     return RAW_EXPORTS_DIR / f"{provider}-{account}-unread.json"
+
+
+def default_search_export_path(provider: str, account: str) -> Path:
+    return RAW_EXPORTS_DIR / f"{provider}-{account}-search-{utc_filename_now()}.json"
 
 
 def outlook_profile_dir(provider: str, account: str) -> Path:
@@ -40,6 +61,10 @@ def outlook_profile_dir(provider: str, account: str) -> Path:
 
 def gmail_token_path(provider: str, account: str) -> Path:
     return account_dir(provider, account) / "token.json"
+
+
+def gmail_client_secret_path(provider: str) -> Path:
+    return provider_state_dir(provider) / "client_secret.json"
 
 
 def state_paths(provider: str, account: str) -> dict[str, str]:
@@ -53,6 +78,7 @@ def state_paths(provider: str, account: str) -> dict[str, str]:
         paths["profile_dir"] = str(outlook_profile_dir(provider, account).resolve())
     if provider == "gmail":
         paths["token_path"] = str(gmail_token_path(provider, account).resolve())
+        paths["client_secret_path"] = str(gmail_client_secret_path(provider).resolve())
     return paths
 
 
@@ -150,15 +176,61 @@ def outlook_module():
     return outlook
 
 
+def gmail_auth_module():
+    from providers.gmail import auth as gmail_auth
+
+    return gmail_auth
+
+
+def gmail_unread_module():
+    from providers.gmail import unread as gmail_unread
+
+    return gmail_unread
+
+
 def handle_account_setup(args: argparse.Namespace) -> int:
+    confirm_setup_overwrite(args.provider, args.account)
+    existing = load_account_config(args.provider, args.account)
+
     if args.provider == "gmail":
-        raise SystemExit("Gmail account setup is not implemented yet.")
+        gmail_auth = gmail_auth_module()
+
+        pending_record = build_account_record(
+            provider=args.provider,
+            account=args.account,
+            label=args.label,
+            mailbox_url=args.mailbox_url or (existing or {}).get("mailbox_url"),
+            status="pending",
+            existing=existing,
+        )
+        write_account_config(args.provider, args.account, pending_record)
+
+        provider_args = argparse.Namespace(
+            token_path=gmail_token_path(args.provider, args.account),
+            client_secret_path=gmail_client_secret_path(args.provider),
+            source_client_secret_path=args.client_secret_file,
+        )
+        result = gmail_auth.run_setup(provider_args)
+
+        final_record = build_account_record(
+            provider=args.provider,
+            account=args.account,
+            label=args.label,
+            mailbox_url=args.mailbox_url or (existing or {}).get("mailbox_url"),
+            status="ready",
+            existing=pending_record,
+        )
+        if result.email_address:
+            final_record["email_address"] = result.email_address
+        write_account_config(args.provider, args.account, final_record)
+
+        print(f"Configured {args.provider}/{args.account}")
+        print(json.dumps({"account": final_record, "paths": state_paths(args.provider, args.account)}, indent=2))
+        return 0
 
     if args.provider != "outlook":
         raise SystemExit(f"Unsupported provider: {args.provider}")
 
-    confirm_setup_overwrite(args.provider, args.account)
-    existing = load_account_config(args.provider, args.account)
     outlook = outlook_module()
     mailbox_url = provider_mailbox_url(args, existing, default=outlook.DEFAULT_OUTLOOK_URL)
 
@@ -227,7 +299,14 @@ def handle_unread_export(args: argparse.Namespace) -> int:
     config = ensure_account_exists(args.provider, args.account)
 
     if args.provider == "gmail":
-        raise SystemExit("Gmail unread export is not implemented yet.")
+        gmail_unread = gmail_unread_module()
+        output_path = args.output or default_raw_export_path(args.provider, args.account)
+        provider_args = argparse.Namespace(
+            account=args.account,
+            token_path=gmail_token_path(args.provider, args.account),
+            output=Path(output_path),
+        )
+        return gmail_unread.run_export(provider_args)
 
     if args.provider != "outlook":
         raise SystemExit(f"Unsupported provider: {args.provider}")
@@ -236,12 +315,35 @@ def handle_unread_export(args: argparse.Namespace) -> int:
     output_path = args.output or default_raw_export_path(args.provider, args.account)
     mailbox_url = provider_mailbox_url(args, config, default=outlook.DEFAULT_OUTLOOK_URL)
     provider_args = argparse.Namespace(
+        account=args.account,
         profile_dir=outlook_profile_dir(args.provider, args.account),
         outlook_url=mailbox_url,
         output=Path(output_path),
         headless=args.headless,
     )
     return outlook.run_export(provider_args)
+
+
+def handle_search_export(args: argparse.Namespace) -> int:
+    config = ensure_account_exists(args.provider, args.account)
+
+    if args.provider != "outlook":
+        raise SystemExit("Search export is currently implemented only for Outlook.")
+
+    outlook = outlook_module()
+    output_path = args.output or default_search_export_path(args.provider, args.account)
+    mailbox_url = provider_mailbox_url(args, config, default=outlook.DEFAULT_OUTLOOK_URL)
+    provider_args = argparse.Namespace(
+        account=args.account,
+        profile_dir=outlook_profile_dir(args.provider, args.account),
+        outlook_url=mailbox_url,
+        output=Path(output_path),
+        query=args.query,
+        max_results=args.max_results,
+        thread_depth=args.thread_depth,
+        headless=args.headless,
+    )
+    return outlook.run_search_export(provider_args)
 
 
 def handle_action_stub(args: argparse.Namespace) -> int:
@@ -274,6 +376,14 @@ def build_parser() -> argparse.ArgumentParser:
     add_provider_account_args(account_setup)
     account_setup.add_argument("--label")
     account_setup.add_argument("--mailbox-url")
+    account_setup.add_argument(
+        "--client-secret-file",
+        type=Path,
+        help=(
+            "Optional Gmail OAuth desktop client credentials JSON used to bootstrap shared provider auth. "
+            "Also read from SURFACE_GMAIL_CLIENT_SECRET_FILE."
+        ),
+    )
     account_setup.set_defaults(handler=handle_account_setup)
 
     account_list = account_subparsers.add_parser("list", help="List configured accounts.")
@@ -288,6 +398,14 @@ def build_parser() -> argparse.ArgumentParser:
     add_provider_account_args(account_reauth)
     account_reauth.add_argument("--label")
     account_reauth.add_argument("--mailbox-url")
+    account_reauth.add_argument(
+        "--client-secret-file",
+        type=Path,
+        help=(
+            "Optional Gmail OAuth desktop client credentials JSON used to bootstrap shared provider auth. "
+            "Also read from SURFACE_GMAIL_CLIENT_SECRET_FILE."
+        ),
+    )
     account_reauth.set_defaults(handler=handle_account_reauth)
 
     unread_parser = subparsers.add_parser("unread", help="Export raw unread mail.")
@@ -299,6 +417,19 @@ def build_parser() -> argparse.ArgumentParser:
     unread_export.add_argument("--mailbox-url")
     unread_export.add_argument("--headless", action="store_true")
     unread_export.set_defaults(handler=handle_unread_export)
+
+    search_parser = subparsers.add_parser("search", help="Export raw mail search results.")
+    search_subparsers = search_parser.add_subparsers(dest="search_command", required=True)
+
+    search_export = search_subparsers.add_parser("export", help="Export search results for one account.")
+    add_provider_account_args(search_export)
+    search_export.add_argument("--query", required=True)
+    search_export.add_argument("--output", type=Path)
+    search_export.add_argument("--max-results", type=positive_int)
+    search_export.add_argument("--thread-depth", default="all")
+    search_export.add_argument("--mailbox-url")
+    search_export.add_argument("--headless", action="store_true")
+    search_export.set_defaults(handler=handle_search_export)
 
     action_parser = subparsers.add_parser("action", help="Run provider-backed mail actions.")
     action_subparsers = action_parser.add_subparsers(dest="action_command", required=True)
@@ -332,4 +463,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.handler(args)
+    try:
+        return args.handler(args)
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        return 130
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1

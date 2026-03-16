@@ -7,11 +7,12 @@ The rule is simple: every mail provider should export unread email into the same
 The development environment is shared across providers through the repo-level `environment.yml`.
 
 Provider account state for the root CLI should live outside the repo under `~/.surface/` by default.
+Provider-shared OAuth client configuration can also live there when a provider needs one app identity across multiple accounts.
 
 ## Current Direction
 
 - `providers/outlook` uses browser automation because the target Outlook account does not allow the preferred programmatic access path.
-- `providers/gmail` should use the Gmail API with OAuth desktop sign-in rather than browser automation.
+- `providers/gmail` uses the Gmail API with OAuth desktop sign-in rather than browser automation.
 - the future menu bar app should consume the shared contract rather than provider-specific payloads.
 
 ## Provider Interface
@@ -30,13 +31,43 @@ Provider-local scripts are still acceptable as internal entrypoints while the re
 `setup` is allowed to be provider-specific:
 
 - Outlook: sign in once with an account-scoped dedicated browser profile
-- Gmail: complete OAuth once and cache the refresh token
+- Gmail: seed one shared `client_secret.json` for the provider, then complete desktop OAuth per account and cache each refresh token in `token.json`
 
 `export` should always produce the same contract:
 
 - unread messages only
 - no attachments in v1
 - include enough metadata for the future UI to show quick actions such as RSVP
+
+## New Provider Checklist
+
+When implementing Gmail or another provider:
+
+- put provider-specific code under `providers/<provider>/`
+- wire public command handling through `surface_cli/main.py`
+- keep account state under `~/.surface/accounts/<provider>/<account>/`
+- emit JSON that matches `contracts/unread-mail-v1.schema.json`
+- treat CSV as optional derived output only, not the source of truth
+- update docs and contract files in the same change if the unread shape changes
+
+For Gmail specifically, the current root CLI setup flow is:
+
+```bash
+python surface account setup \
+  --provider gmail \
+  --account personal \
+  --client-secret-file /absolute/path/to/credentials.json
+```
+
+That first run seeds `~/.surface/providers/gmail/client_secret.json`. Later Gmail accounts can use:
+
+```bash
+python surface account setup \
+  --provider gmail \
+  --account work
+```
+
+`SURFACE_GMAIL_CLIENT_SECRET_FILE` can provide the initial client credentials file without passing the flag explicitly.
 
 ## Why This Structure
 

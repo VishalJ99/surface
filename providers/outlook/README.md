@@ -34,6 +34,19 @@ python surface unread export \
   --headless
 ```
 
+Export search results with the same message and thread shape:
+
+```bash
+python surface search export \
+  --provider outlook \
+  --account work \
+  --query josh \
+  --max-results 50 \
+  --thread-depth all \
+  --output ~/.surface/exports/raw/outlook-work-search.json \
+  --headless
+```
+
 Multiple accounts are supported by using distinct account slugs through the root CLI:
 
 ```bash
@@ -50,7 +63,8 @@ The provider-local script remains available as the implementation entrypoint for
 
 ```bash
 python providers/outlook/export_unread_emails.py setup
-python providers/outlook/export_unread_emails.py export --output /absolute/path/to/unread.json --headless
+python providers/outlook/export_unread_emails.py export --account work --output /absolute/path/to/unread.json --headless
+python providers/outlook/export_unread_emails.py search-export --account work --query josh --output /absolute/path/to/search.json --headless
 ```
 
 ## Notes

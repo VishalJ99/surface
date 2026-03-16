@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export unread Outlook Web mail into the shared Surface contract."""
+"""Export Outlook Web mail into the shared Surface contract."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 try:
@@ -87,7 +87,7 @@ class HTMLTextExtractor(HTMLParser):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Export unread Outlook Web mail into the shared Surface unread-mail contract."
+        description="Export Outlook Web mail into the shared Surface JSON contract."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -109,6 +109,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the JSON output file.",
     )
     export_parser.add_argument(
+        "--account",
+        required=True,
+        help="Logical account slug for the export artifact, for example `work` or `personal`.",
+    )
+    export_parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run without opening a browser window. Keep this off until login bootstrap is finished.",
+    )
+
+    search_export_parser = subparsers.add_parser(
+        "search-export",
+        help="Export Outlook Web search results into the shared JSON contract shape.",
+    )
+    add_common_browser_args(search_export_parser)
+    search_export_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Path to the JSON output file.",
+    )
+    search_export_parser.add_argument(
+        "--account",
+        required=True,
+        help="Logical account slug for the export artifact, for example `work` or `personal`.",
+    )
+    search_export_parser.add_argument(
+        "--query",
+        required=True,
+        help="Search term to enter into the Outlook search box.",
+    )
+    search_export_parser.add_argument(
+        "--max-results",
+        type=int,
+        help="Maximum number of top-level search results to export.",
+    )
+    search_export_parser.add_argument(
+        "--thread-depth",
+        default="all",
+        help="How many messages per returned thread to include. Use `all` or a positive integer.",
+    )
+    search_export_parser.add_argument(
         "--headless",
         action="store_true",
         help="Run without opening a browser window. Keep this off until login bootstrap is finished.",
@@ -307,6 +349,60 @@ def apply_unread_filter(page: Page) -> None:
     page.wait_for_timeout(2_000)
 
 
+def locate_search_box(page: Page) -> Any:
+    candidates = (
+        page.get_by_role("searchbox", name=re.compile("search", re.IGNORECASE)),
+        page.get_by_role("combobox", name=re.compile("search", re.IGNORECASE)),
+        page.get_by_role("textbox", name=re.compile("search", re.IGNORECASE)),
+        page.locator('[role="searchbox"]'),
+        page.locator('[role="combobox"][aria-label*="Search" i]'),
+        page.locator('input[aria-label*="Search" i]'),
+        page.locator('input[placeholder*="Search" i]'),
+        page.locator('textarea[aria-label*="Search" i]'),
+    )
+
+    for locator in candidates:
+        if not locator.count():
+            continue
+        candidate = locator.first
+        try:
+            candidate.wait_for(timeout=2_000)
+            return candidate
+        except Error:
+            continue
+
+    debug_fields = page.locator('input, textarea, [role="searchbox"], [role="combobox"], [role="textbox"]').evaluate_all(
+        """
+        elements => elements.slice(0, 20).map(element => ({
+            tag: element.tagName,
+            role: element.getAttribute('role') || '',
+            ariaLabel: element.getAttribute('aria-label') || '',
+            placeholder: element.getAttribute('placeholder') || '',
+            title: element.getAttribute('title') || '',
+        }))
+        """
+    )
+    raise RuntimeError(f"Could not locate the Outlook search box. Candidate fields: {debug_fields}")
+
+
+def apply_search_query(page: Page, query: str) -> None:
+    search_box = locate_search_box(page)
+    search_box.click()
+    page.wait_for_timeout(500)
+    try:
+        search_box.press("Meta+A")
+    except Error:
+        try:
+            search_box.press("Control+A")
+        except Error:
+            pass
+    search_box.fill(query)
+    search_box.press("Enter")
+    page.wait_for_timeout(3_000)
+    wait_for_message_list(page, timeout=30_000)
+    reset_message_list_to_top(page)
+
+
 def collect_visible_rows(page: Page) -> list[dict[str, str]]:
     rows = page.locator('[role="option"]')
     return rows.evaluate_all(
@@ -367,7 +463,29 @@ def maybe_expand_filtered_results(page: Page) -> bool:
     return True
 
 
-def collect_filtered_conversations(page: Page) -> list[dict[str, str]]:
+def conversation_row_key(row: dict[str, str]) -> str:
+    return row.get("conversation_id", "")
+
+
+def search_result_row_key(row: dict[str, str]) -> str:
+    instance_key = row.get("instance_key", "")
+    if instance_key:
+        return instance_key
+    conversation_id = row.get("conversation_id", "")
+    aria_label = row.get("aria_label", "")
+    text = row.get("text", "")
+    if conversation_id or aria_label or text:
+        return f"{conversation_id}|{aria_label}|{text}"
+    return ""
+
+
+def collect_rows(
+    page: Page,
+    *,
+    key_fn: Callable[[dict[str, str]], str],
+    max_results: int | None = None,
+    allow_server_search_expansion: bool = False,
+) -> tuple[list[dict[str, str]], bool]:
     seen: dict[str, dict[str, str]] = {}
     stagnant_rounds = 0
     expanded_server_results = False
@@ -377,13 +495,15 @@ def collect_filtered_conversations(page: Page) -> list[dict[str, str]]:
     while stagnant_rounds < 4:
         grew = False
         for row in collect_visible_rows(page):
-            conversation_id = row.get("conversation_id", "")
-            if not conversation_id:
+            row_key = key_fn(row)
+            if not row_key:
                 continue
 
-            if conversation_id not in seen:
-                seen[conversation_id] = row
+            if row_key not in seen:
+                seen[row_key] = row
                 grew = True
+                if max_results is not None and len(seen) >= max_results:
+                    return list(seen.values()), True
 
         scroll_state = scroll_message_list(page)
         page.wait_for_timeout(800)
@@ -393,14 +513,23 @@ def collect_filtered_conversations(page: Page) -> list[dict[str, str]]:
             stagnant_rounds = 0
             continue
 
-        if not expanded_server_results and maybe_expand_filtered_results(page):
+        if allow_server_search_expansion and not expanded_server_results and maybe_expand_filtered_results(page):
             expanded_server_results = True
             stagnant_rounds = 0
             continue
 
         stagnant_rounds += 1
 
-    return list(seen.values())
+    return list(seen.values()), False
+
+
+def collect_filtered_conversations(page: Page) -> list[dict[str, str]]:
+    rows, _ = collect_rows(page, key_fn=conversation_row_key, allow_server_search_expansion=True)
+    return rows
+
+
+def collect_search_result_rows(page: Page, *, max_results: int | None = None) -> tuple[list[dict[str, str]], bool]:
+    return collect_rows(page, key_fn=search_result_row_key, max_results=max_results)
 
 
 def build_owa_headers(base_headers: dict[str, str], action: str) -> dict[str, str]:
@@ -545,6 +674,32 @@ def message_identity(item: dict[str, Any], conversation_id: str) -> str:
     )
 
 
+def parse_thread_depth(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        if value <= 0:
+            raise RuntimeError("`--thread-depth` must be `all` or a positive integer.")
+        return value
+
+    raw_value = str(value).strip().lower()
+    if raw_value in {"", "all"}:
+        return None
+
+    try:
+        parsed = int(raw_value)
+    except ValueError as exc:
+        raise RuntimeError("`--thread-depth` must be `all` or a positive integer.") from exc
+
+    if parsed <= 0:
+        raise RuntimeError("`--thread-depth` must be `all` or a positive integer.")
+    return parsed
+
+
+def thread_depth_label(thread_depth: int | None) -> str:
+    return "all" if thread_depth is None else str(thread_depth)
+
+
 def build_message_record(
     item: dict[str, Any],
     conversation_id: str,
@@ -608,6 +763,79 @@ def build_message_record(
         "is_root_node": is_root_node,
         **({"row_aria_label": row_aria_label} if row_aria_label is not None else {}),
     }
+
+
+def build_thread_bundle(
+    context: BrowserContext,
+    service_url: str,
+    headers: dict[str, str],
+    conversation_id: str,
+    *,
+    thread_depth: int | None,
+) -> dict[str, Any]:
+    full_item_entries: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for node in fetch_conversation_nodes(context, service_url, headers, conversation_id):
+        node_metadata = {
+            "parent_internet_message_id": node.get("ParentInternetMessageId"),
+            "has_quoted_text": node.get("HasQuotedText"),
+            "is_root_node": node.get("IsRootNode"),
+        }
+        for item in node.get("Items", []):
+            full_item_entries.append((item, node_metadata))
+
+    included_item_entries = full_item_entries if thread_depth is None else full_item_entries[:thread_depth]
+    thread_messages = [
+        build_message_record(
+            item,
+            conversation_id,
+            parent_internet_message_id=node_metadata["parent_internet_message_id"],
+            has_quoted_text=node_metadata["has_quoted_text"],
+            is_root_node=node_metadata["is_root_node"],
+        )
+        for item, node_metadata in included_item_entries
+    ]
+    thread_index_by_identity = {
+        (
+            message.get("message_id")
+            or message.get("internet_message_id")
+            or message.get("instance_key")
+            or f"{conversation_id}:{index}"
+        ): index
+        for index, message in enumerate(thread_messages)
+    }
+
+    return {
+        "conversation_id": conversation_id,
+        "full_item_entries": full_item_entries,
+        "included_item_entries": included_item_entries,
+        "thread_messages": thread_messages,
+        "thread_index_by_identity": thread_index_by_identity,
+        "thread": {
+            "conversation_id": conversation_id,
+            "message_count": len(thread_messages),
+            "messages": thread_messages,
+        },
+    }
+
+
+def select_search_result_item(
+    row: dict[str, str],
+    conversation_id: str,
+    full_item_entries: list[tuple[dict[str, Any], dict[str, Any]]],
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    row_instance_key = row.get("instance_key", "")
+    if row_instance_key:
+        for item, node_metadata in full_item_entries:
+            if item.get("InstanceKey") == row_instance_key:
+                return item, node_metadata
+
+    for item, node_metadata in full_item_entries:
+        if message_identity(item, conversation_id) == row_instance_key:
+            return item, node_metadata
+
+    if full_item_entries:
+        return full_item_entries[0]
+    return None
 
 
 def launch_context(profile_dir: Path, *, headless: bool) -> tuple[Playwright, BrowserContext, Page]:
@@ -676,46 +904,18 @@ def run_export(args: argparse.Namespace) -> int:
             if not conversation_id:
                 continue
 
-            thread_messages: list[dict[str, Any]] = []
-            unread_items: list[tuple[dict[str, Any], dict[str, Any]]] = []
-            for node in fetch_conversation_nodes(context, service_url, owa_headers, conversation_id):
-                node_metadata = {
-                    "parent_internet_message_id": node.get("ParentInternetMessageId"),
-                    "has_quoted_text": node.get("HasQuotedText"),
-                    "is_root_node": node.get("IsRootNode"),
-                }
-                for item in node.get("Items", []):
-                    thread_messages.append(
-                        build_message_record(
-                            item,
-                            conversation_id,
-                            parent_internet_message_id=node_metadata["parent_internet_message_id"],
-                            has_quoted_text=node_metadata["has_quoted_text"],
-                            is_root_node=node_metadata["is_root_node"],
-                        )
-                    )
-                    if item.get("IsRead") is not True:
-                        unread_items.append((item, node_metadata))
-
-            threads.append(
-                {
-                    "conversation_id": conversation_id,
-                    "message_count": len(thread_messages),
-                    "messages": thread_messages,
-                }
+            thread_bundle = build_thread_bundle(
+                context,
+                service_url,
+                owa_headers,
+                conversation_id,
+                thread_depth=None,
             )
+            threads.append(thread_bundle["thread"])
 
-            thread_index_by_identity = {
-                (
-                    message.get("message_id")
-                    or message.get("internet_message_id")
-                    or message.get("instance_key")
-                    or f"{conversation_id}:{index}"
-                ): index
-                for index, message in enumerate(thread_messages)
-            }
-
-            for item, node_metadata in unread_items:
+            for item, node_metadata in thread_bundle["full_item_entries"]:
+                if item.get("IsRead") is True:
+                    continue
                 identity = message_identity(item, conversation_id)
                 if identity in seen_messages:
                     continue
@@ -730,15 +930,15 @@ def run_export(args: argparse.Namespace) -> int:
                     has_quoted_text=node_metadata["has_quoted_text"],
                     is_root_node=node_metadata["is_root_node"],
                 )
-                record["thread_message_index"] = thread_index_by_identity.get(identity)
-                record["thread_message_count"] = len(thread_messages)
+                record["thread_message_index"] = thread_bundle["thread_index_by_identity"].get(identity)
+                record["thread_message_count"] = thread_bundle["thread"]["message_count"]
                 emails.append(record)
 
         payload = {
             "contract": CONTRACT_VERSION,
             "provider": PROVIDER_NAME,
+            "account": args.account,
             "source": "outlook_web",
-            "mailbox_url": page.url or args.outlook_url,
             "service_url": service_url,
             "profile_dir": str(profile_dir.resolve()),
             "email_count": len(emails),
@@ -754,6 +954,84 @@ def run_export(args: argparse.Namespace) -> int:
         playwright.stop()
 
 
+def run_search_export(args: argparse.Namespace) -> int:
+    profile_dir = args.profile_dir.expanduser()
+    output_path = args.output.expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    thread_depth = parse_thread_depth(args.thread_depth)
+
+    playwright, context, page = launch_context(profile_dir, headless=args.headless)
+    try:
+        service_url, owa_headers = capture_owa_session(context, page, args.outlook_url)
+        apply_search_query(page, args.query)
+        search_rows, truncated = collect_search_result_rows(page, max_results=args.max_results)
+
+        emails: list[dict[str, Any]] = []
+        threads: list[dict[str, Any]] = []
+        thread_bundle_by_conversation: dict[str, dict[str, Any]] = {}
+
+        for row in search_rows:
+            conversation_id = row.get("conversation_id", "")
+            if not conversation_id:
+                continue
+
+            if conversation_id not in thread_bundle_by_conversation:
+                thread_bundle_by_conversation[conversation_id] = build_thread_bundle(
+                    context,
+                    service_url,
+                    owa_headers,
+                    conversation_id,
+                    thread_depth=thread_depth,
+                )
+                threads.append(thread_bundle_by_conversation[conversation_id]["thread"])
+
+            thread_bundle = thread_bundle_by_conversation[conversation_id]
+            selected_item = select_search_result_item(row, conversation_id, thread_bundle["full_item_entries"])
+            if selected_item is None:
+                continue
+
+            item, node_metadata = selected_item
+            identity = message_identity(item, conversation_id)
+            record = build_message_record(
+                item,
+                conversation_id,
+                instance_key=row.get("instance_key", ""),
+                row_aria_label=row.get("aria_label", ""),
+                parent_internet_message_id=node_metadata["parent_internet_message_id"],
+                has_quoted_text=node_metadata["has_quoted_text"],
+                is_root_node=node_metadata["is_root_node"],
+            )
+            record["thread_message_index"] = thread_bundle["thread_index_by_identity"].get(identity)
+            record["thread_message_count"] = thread_bundle["thread"]["message_count"]
+            emails.append(record)
+
+        payload = {
+            "contract": CONTRACT_VERSION,
+            "provider": PROVIDER_NAME,
+            "account": args.account,
+            "source": "outlook_web",
+            "service_url": service_url,
+            "profile_dir": str(profile_dir.resolve()),
+            "selection_mode": "search",
+            "search_query": args.query,
+            "thread_depth": thread_depth_label(thread_depth),
+            "truncated": truncated,
+            "email_count": len(emails),
+            "thread_count": len(threads),
+            "emails": emails,
+            "threads": threads,
+        }
+        if args.max_results is not None:
+            payload["max_results"] = args.max_results
+
+        output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        print(f"Wrote {len(emails)} search results across {len(threads)} threads to {output_path}")
+        return 0
+    finally:
+        context.close()
+        playwright.stop()
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -763,6 +1041,8 @@ def main() -> int:
             return run_setup(args)
         if args.command == "export":
             return run_export(args)
+        if args.command == "search-export":
+            return run_search_export(args)
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)
         return 130
