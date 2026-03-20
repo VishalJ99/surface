@@ -40,7 +40,9 @@ ACCOUNTS_DIR = SURFACE_HOME / "accounts"
 EXPORTS_DIR = SURFACE_HOME / "exports"
 RAW_EXPORTS_DIR = EXPORTS_DIR / "raw"
 DERIVED_EXPORTS_DIR = EXPORTS_DIR / "derived"
+FILTERED_EXPORTS_DIR = EXPORTS_DIR / "filtered"
 PROVIDERS_DIR = SURFACE_HOME / "providers"
+UI_DIR = SURFACE_HOME / "ui"
 
 SUPPORTED_PROVIDERS = ("outlook", "gmail")
 ACTION_COMMANDS = ("reply", "reply-all", "forward", "rsvp", "mark-read", "archive", "delete")
@@ -83,6 +85,14 @@ def default_search_export_path(provider: str, account: str) -> Path:
 
 def default_thread_summaries_path(raw_output_path: Path) -> Path:
     return DERIVED_EXPORTS_DIR / f"{raw_output_path.stem}-thread-summaries.json"
+
+
+def default_menubar_view_path() -> Path:
+    return FILTERED_EXPORTS_DIR / "menubar-inbox.json"
+
+
+def default_sync_status_path() -> Path:
+    return UI_DIR / "sync-status.json"
 
 
 def outlook_profile_dir(provider: str, account: str) -> Path:
@@ -200,6 +210,31 @@ def provider_mailbox_url(args: argparse.Namespace, config: dict[str, Any] | None
     return args.mailbox_url or (config or {}).get("mailbox_url") or default
 
 
+def iter_account_records(
+    *,
+    provider: str | None = None,
+    account: str | None = None,
+    ready_only: bool = False,
+) -> list[dict[str, Any]]:
+    if account and not provider:
+        raise SystemExit("--account requires --provider.")
+
+    records: list[dict[str, Any]] = []
+    providers = [provider] if provider else list(SUPPORTED_PROVIDERS)
+    for provider_name in providers:
+        provider_dir = ACCOUNTS_DIR / provider_name
+        if not provider_dir.exists():
+            continue
+        for config_path in sorted(provider_dir.glob("*/config.json")):
+            record = json.loads(config_path.read_text(encoding="utf-8"))
+            if account and record.get("account") != account:
+                continue
+            if ready_only and record.get("status") != "ready":
+                continue
+            records.append(record)
+    return records
+
+
 def outlook_module():
     from providers.outlook import export_unread_emails as outlook
 
@@ -222,6 +257,12 @@ def post_process_module():
     from surface_cli import post_process
 
     return post_process
+
+
+def menubar_module():
+    from surface_cli import menubar
+
+    return menubar
 
 
 def handle_account_setup(args: argparse.Namespace) -> int:
@@ -302,16 +343,9 @@ def handle_account_setup(args: argparse.Namespace) -> int:
 
 
 def handle_account_list(args: argparse.Namespace) -> int:
-    records: list[dict[str, Any]] = []
-    providers = [args.provider] if args.provider else list(SUPPORTED_PROVIDERS)
-    for provider in providers:
-        provider_dir = ACCOUNTS_DIR / provider
-        if not provider_dir.exists():
-            continue
-        for config_path in sorted(provider_dir.glob("*/config.json")):
-            record = json.loads(config_path.read_text(encoding="utf-8"))
-            record["paths"] = state_paths(provider, record["account"])
-            records.append(record)
+    records = iter_account_records(provider=args.provider)
+    for record in records:
+        record["paths"] = state_paths(record["provider"], record["account"])
 
     print(json.dumps(records, indent=2))
     return 0
@@ -334,33 +368,14 @@ def handle_account_reauth(args: argparse.Namespace) -> int:
 def handle_unread_export(args: argparse.Namespace) -> int:
     config = ensure_account_exists(args.provider, args.account)
     output_path = Path(args.output or default_raw_export_path(args.provider, args.account))
-
-    if args.provider == "gmail":
-        gmail_unread = gmail_unread_module()
-        provider_args = argparse.Namespace(
-            account=args.account,
-            token_path=gmail_token_path(args.provider, args.account),
-            output=output_path,
-        )
-        result = gmail_unread.run_export(provider_args)
-        if result != 0:
-            return result
-        maybe_run_post_process_after_export(args, output_path)
-        return 0
-
-    if args.provider != "outlook":
-        raise SystemExit(f"Unsupported provider: {args.provider}")
-
-    outlook = outlook_module()
-    mailbox_url = provider_mailbox_url(args, config, default=outlook.DEFAULT_OUTLOOK_URL)
-    provider_args = argparse.Namespace(
-        account=args.account,
-        profile_dir=outlook_profile_dir(args.provider, args.account),
-        outlook_url=mailbox_url,
-        output=output_path,
+    result = run_unread_export(
+        args.provider,
+        args.account,
+        output_path=output_path,
+        config=config,
+        mailbox_url=args.mailbox_url,
         headless=args.headless,
     )
-    result = outlook.run_export(provider_args)
     if result != 0:
         return result
     maybe_run_post_process_after_export(args, output_path)
@@ -417,6 +432,170 @@ def handle_filter_apply(args: argparse.Namespace) -> int:
         f"({result.summary_count} summaries across {result.chunk_count} chunks)"
     )
     return 0 if result.status == "complete" else 1
+
+
+def handle_view_build(args: argparse.Namespace) -> int:
+    if args.view != "menubar":
+        raise SystemExit(f"Unsupported view: {args.view}")
+
+    menubar = menubar_module()
+    output_path = Path(args.output or default_menubar_view_path())
+    result = menubar.build_menubar_view(
+        raw_exports_dir=RAW_EXPORTS_DIR,
+        accounts_dir=ACCOUNTS_DIR,
+        output_path=output_path,
+        sync_status_path=default_sync_status_path(),
+    )
+    print(
+        json.dumps(
+            {
+                "view": args.view,
+                "output_path": str(result.output_path.resolve()),
+                "item_count": result.item_count,
+                "mailbox_count": result.mailbox_count,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def handle_sync_run(args: argparse.Namespace) -> int:
+    records = iter_account_records(provider=args.provider, account=args.account, ready_only=True)
+    if not records:
+        scope = f"{args.provider}/{args.account}" if args.provider and args.account else args.provider or "all providers"
+        raise SystemExit(f"No ready accounts found for sync scope: {scope}.")
+
+    menubar = menubar_module()
+    sync_status_path = default_sync_status_path()
+    previous_status = menubar.load_sync_status_payload(sync_status_path)
+
+    syncing_status = menubar.default_sync_status_payload()
+    syncing_status["state"] = "syncing"
+    syncing_status["last_attempt_at"] = utc_now()
+    syncing_status["last_success_at"] = previous_status.get("last_success_at")
+    menubar.write_sync_status_payload(sync_status_path, syncing_status)
+
+    account_results: list[dict[str, Any]] = []
+    for record in records:
+        provider = record["provider"]
+        account = record["account"]
+        output_path = default_raw_export_path(provider, account)
+        try:
+            result = run_unread_export(
+                provider,
+                account,
+                output_path=output_path,
+                config=record,
+                headless=True,
+            )
+            if result != 0:
+                raise RuntimeError(f"unread export exited with status {result}")
+            export_payload = json.loads(output_path.read_text(encoding="utf-8"))
+            account_results.append(
+                {
+                    "provider": provider,
+                    "account": account,
+                    "status": "ok",
+                    "output_path": str(output_path.resolve()),
+                    "email_count": export_payload.get("email_count", 0),
+                    "thread_count": export_payload.get("thread_count", 0),
+                }
+            )
+        except Exception as exc:
+            account_results.append(
+                {
+                    "provider": provider,
+                    "account": account,
+                    "status": "error",
+                    "error": str(exc),
+                }
+            )
+
+    account_error_count = sum(1 for result in account_results if result["status"] != "ok")
+    all_failed = account_error_count == len(account_results)
+    if account_error_count == 0:
+        state = "idle"
+    elif all_failed:
+        state = "error"
+    else:
+        state = "partial"
+
+    final_status = menubar.default_sync_status_payload()
+    final_status["state"] = state
+    final_status["last_attempt_at"] = syncing_status["last_attempt_at"]
+    final_status["last_success_at"] = utc_now() if account_error_count == 0 else previous_status.get("last_success_at")
+    final_status["account_error_count"] = account_error_count
+    final_status["accounts"] = account_results
+    if account_error_count:
+        final_status["error"] = (
+            "All accounts failed during sync." if all_failed else "One or more accounts failed during sync."
+        )
+    menubar.write_sync_status_payload(sync_status_path, final_status)
+
+    view_result = menubar.build_menubar_view(
+        raw_exports_dir=RAW_EXPORTS_DIR,
+        accounts_dir=ACCOUNTS_DIR,
+        output_path=default_menubar_view_path(),
+        sync_status_path=sync_status_path,
+    )
+
+    print(
+        json.dumps(
+            {
+                "status": state,
+                "sync_status_path": str(sync_status_path.resolve()),
+                "view_output_path": str(view_result.output_path.resolve()),
+                "account_count": len(account_results),
+                "account_error_count": account_error_count,
+                "view_item_count": view_result.item_count,
+                "view_mailbox_count": view_result.mailbox_count,
+                "accounts": account_results,
+            },
+            indent=2,
+        )
+    )
+    return 0 if account_error_count == 0 else 1
+
+
+def run_unread_export(
+    provider: str,
+    account: str,
+    *,
+    output_path: Path,
+    config: dict[str, Any] | None = None,
+    mailbox_url: str | None = None,
+    headless: bool = False,
+) -> int:
+    config = config or ensure_account_exists(provider, account)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if provider == "gmail":
+        gmail_unread = gmail_unread_module()
+        provider_args = argparse.Namespace(
+            account=account,
+            token_path=gmail_token_path(provider, account),
+            output=output_path,
+        )
+        return gmail_unread.run_export(provider_args)
+
+    if provider != "outlook":
+        raise SystemExit(f"Unsupported provider: {provider}")
+
+    outlook = outlook_module()
+    resolved_mailbox_url = mailbox_url or provider_mailbox_url(
+        argparse.Namespace(mailbox_url=None),
+        config,
+        default=outlook.DEFAULT_OUTLOOK_URL,
+    )
+    provider_args = argparse.Namespace(
+        account=account,
+        profile_dir=outlook_profile_dir(provider, account),
+        outlook_url=resolved_mailbox_url,
+        output=output_path,
+        headless=headless,
+    )
+    return outlook.run_export(provider_args)
 
 
 def add_post_process_args(parser: argparse.ArgumentParser) -> None:
@@ -539,6 +718,22 @@ def build_parser() -> argparse.ArgumentParser:
     add_post_process_args(search_export)
     search_export.set_defaults(handler=handle_search_export)
 
+    sync_parser = subparsers.add_parser("sync", help="Refresh unread exports and rebuild frontend view artifacts.")
+    sync_subparsers = sync_parser.add_subparsers(dest="sync_command", required=True)
+
+    sync_run = sync_subparsers.add_parser("run", help="Refresh unread exports for ready accounts and rebuild views.")
+    sync_run.add_argument("--provider", choices=SUPPORTED_PROVIDERS)
+    sync_run.add_argument("--account")
+    sync_run.set_defaults(handler=handle_sync_run)
+
+    view_parser = subparsers.add_parser("view", help="Build frontend-facing view artifacts from local exports.")
+    view_subparsers = view_parser.add_subparsers(dest="view_command", required=True)
+
+    view_build = view_subparsers.add_parser("build", help="Build a derived frontend view artifact.")
+    view_build.add_argument("--view", choices=("menubar",), required=True)
+    view_build.add_argument("--output", type=Path)
+    view_build.set_defaults(handler=handle_view_build)
+
     action_parser = subparsers.add_parser("action", help="Run provider-backed mail actions.")
     action_subparsers = action_parser.add_subparsers(dest="action_command", required=True)
     for command in ACTION_COMMANDS:
@@ -557,10 +752,10 @@ def build_parser() -> argparse.ArgumentParser:
             action_command.add_argument("--response", choices=("accept", "tentative", "decline"))
         action_command.set_defaults(handler=handle_action_stub)
 
-    filter_parser = subparsers.add_parser("filter", help="Build frontend-facing filtered views.")
+    filter_parser = subparsers.add_parser("filter", help="Build derived mail artifacts.")
     filter_subparsers = filter_parser.add_subparsers(dest="filter_command", required=True)
 
-    filter_apply = filter_subparsers.add_parser("apply", help="Apply blocking/classification rules to raw exports.")
+    filter_apply = filter_subparsers.add_parser("apply", help="Build derived thread summaries from a raw export.")
     filter_apply.add_argument("--input", type=Path, required=True)
     filter_apply.add_argument("--output", type=Path, required=True)
     filter_apply.add_argument("--backend", choices=("openrouter",))

@@ -18,9 +18,11 @@ Frontends should consume derived data from the backend rather than reimplement p
 
 - [README.md](README.md)
 - [docs/cli-architecture.md](docs/cli-architecture.md)
+- [docs/menubar-popover-architecture.md](docs/menubar-popover-architecture.md)
 - [docs/provider-architecture.md](docs/provider-architecture.md)
 - [contracts/unread-mail-v1.schema.json](contracts/unread-mail-v1.schema.json)
 - [contracts/thread-summaries-v1.schema.json](contracts/thread-summaries-v1.schema.json)
+- [contracts/filtered-menubar-v1.schema.json](contracts/filtered-menubar-v1.schema.json)
 
 ## Current State
 
@@ -29,6 +31,11 @@ Frontends should consume derived data from the backend rather than reimplement p
 - Gmail unread export is implemented with the Gmail API and desktop OAuth.
 - The canonical export artifact is JSON.
 - OpenRouter-backed derived thread summarization is implemented through `surface filter apply`.
+- The first frontend phase is a read-only macOS menu bar popover fed by `surface.filtered_menubar.v1`.
+- `surface view build --view menubar` is implemented as the current identity read path over raw unread exports.
+- `surface sync run` is implemented to refresh ready accounts and rebuild the menubar view artifact.
+- Blocking, semantic filtering, quick actions, and the detailed viewer are not part of the current build yet.
+- Provider action CLIs are not part of the current frontend build scope yet.
 - CSV is optional and should be treated as a convenience export, not the source of truth.
 - Provider session state and exports are sensitive and should not be committed.
 - The root CLI stores state outside the repo by default under `~/.surface/`.
@@ -143,6 +150,27 @@ Current Gmail auth/state notes:
 - refreshable user token state is stored under `~/.surface/accounts/gmail/<account>/token.json`
 - unread export is programmatic through the Gmail API, not browser automation
 
+### Menubar View
+
+Build the current read-only menubar artifact:
+
+```bash
+python surface view build --view menubar
+```
+
+Refresh ready accounts and rebuild the menubar artifact:
+
+```bash
+python surface sync run
+```
+
+Current menubar-view notes:
+
+- `surface view build --view menubar` currently passes all unread mail through with no blocking or summaries
+- the output artifact is `~/.surface/exports/filtered/menubar-inbox.json`
+- sync bookkeeping lives in `~/.surface/ui/sync-status.json`
+- future filtering and summaries should layer on top of raw exports rather than changing provider exporters
+
 ## Architecture Rules
 
 - Use `account`, not `user`, as the mailbox identity term.
@@ -154,6 +182,8 @@ Current Gmail auth/state notes:
 - Frontends and agents should target stable CLIs, not provider internals.
 - Raw unread export is distinct from filtered/frontend view data.
 - Raw search export is also distinct from filtered/frontend view data.
+- The current filtered menubar view is an identity pass over raw unread exports; filtering and summaries are later pipeline layers.
+- Filtering rules such as sender regex blocking and semantic include/exclude prompts live above the provider layer.
 - LLM backends such as OpenRouter are pipeline dependencies, not mail providers.
 
 ## Implementing A New Provider
@@ -252,6 +282,9 @@ This now exists as the repo-local `surface` CLI entrypoint. Provider-local scrip
 
 - If you change the unread contract, update the schema and docs in the same change.
 - If you change the thread summaries contract, update the schema and docs in the same change.
+- If you change the filtered menubar contract, update the schema and docs in the same change.
+- If you change the menubar/frontend-backend interaction model, update `docs/menubar-popover-architecture.md` and keep the Mermaid architecture diagram current.
+- Keep documentation aligned with the current build phase; do not describe provider action CLIs or quick actions as implemented in the menu bar app before they actually exist.
 - Do not commit files under profile, token, export, or cache directories.
 - Prefer additive schema changes unless a breaking version bump is intentional.
 - Keep JSON as the canonical interchange format for agents and frontends.

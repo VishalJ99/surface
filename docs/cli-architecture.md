@@ -113,7 +113,7 @@ surface/
   contracts/
     unread-mail-v1.schema.json
     thread-summaries-v1.schema.json
-    filtered-mail-v1.schema.json
+    filtered-menubar-v1.schema.json
     action-request-v1.schema.json
     action-result-v1.schema.json
   docs/
@@ -178,8 +178,10 @@ Example command family:
 ```bash
 surface account setup
 surface account list
+surface sync run
 surface unread export
 surface search export
+surface view build --view menubar
 surface filter apply
 surface action reply
 surface action reply-all
@@ -205,7 +207,7 @@ python surface --help
 
 ## Current CLI Reference
 
-Today the repo has a working root CLI with Outlook and Gmail `account setup` and `unread export` wired through it, plus Outlook `search export` and a first pass of `filter apply` for derived thread summaries.
+Today the repo has a working root CLI with Outlook and Gmail `account setup` and `unread export` wired through it, Outlook `search export`, `surface sync run`, `surface view build --view menubar`, and a first pass of `filter apply` for derived thread summaries.
 
 ### Outlook setup
 
@@ -425,6 +427,42 @@ python surface action delete ...
 
 These currently return explicit "not implemented yet" errors.
 
+### Menubar view build
+
+```bash
+python surface view build --view menubar
+```
+
+Current behavior:
+
+- reads unread exports from `~/.surface/exports/raw/`
+- reads sync bookkeeping from `~/.surface/ui/sync-status.json`
+- reshapes all unread mail into `surface.filtered_menubar.v1`
+- writes `~/.surface/exports/filtered/menubar-inbox.json`
+
+Current scope:
+
+- identity pass only
+- no sender blocking
+- no semantic filtering
+- no summary join
+
+### Sync run
+
+```bash
+python surface sync run
+python surface sync run --provider gmail --account personal
+```
+
+Current behavior:
+
+- discovers ready configured accounts
+- refreshes their raw unread exports
+- writes sync bookkeeping under `~/.surface/ui/sync-status.json`
+- rebuilds the menubar view artifact after refresh
+
+For Outlook, this should be treated as the background/headless sync path.
+
 ### CSV
 
 CSV should remain optional.
@@ -606,15 +644,14 @@ Important distinction:
 
 Do not mix filtering rules into provider export code.
 
-Recommended pipeline:
+Recommended long-term pipeline:
 
 1. Export raw unread mail from each account.
-2. Merge exports if the frontend wants a unified inbox.
-3. Apply sender regex blocking.
-4. Apply keyword blocking.
-5. Apply semantic/LLM classification.
-6. Attach summaries if enabled.
-7. Write a derived filtered view contract for the frontend.
+2. Apply sender regex blocking.
+3. Apply semantic/LLM classification.
+4. Write a filtered unread artifact with the same core structure.
+5. Attach summaries as a separate derived artifact if enabled.
+6. Build a frontend view contract from the filtered artifact plus summaries.
 
 Current first-step command:
 
@@ -625,7 +662,7 @@ surface filter apply \
   --backend openrouter
 ```
 
-This first implementation focuses on LLM-derived thread summaries. The broader filtered inbox contract can build on top of this later.
+This first implementation focuses on LLM-derived thread summaries. The current menubar view build is still an identity pass over raw unread exports; the broader filtered inbox contract builds on top of that later.
 
 When `OPENROUTER_API_KEY` is configured, `surface unread export` and `surface search export` also auto-run the same post-processing step unless `--skip-post-process` is set.
 
@@ -642,12 +679,21 @@ Token packing should intentionally stay below the advertised model context limit
 
 ## Menu Bar App Responsibilities
 
+For the first frontend phase, see `docs/menubar-popover-architecture.md` for the proposed popover-specific architecture, sync model, and product boundaries.
+
 The menu bar app should:
 
-- read the filtered view, not raw provider HTML/UI state
+- read the menubar view contract, not raw provider HTML/UI state
 - show concise unread items across accounts
-- support quick reply, forward, RSVP, and summary display
-- support opening a richer mail client view
+- show sync freshness/errors
+- open Settings
+
+Later phases can add:
+
+- quick reply
+- quick forward
+- RSVP actions
+- a richer mail client view
 
 The menu bar app should not:
 

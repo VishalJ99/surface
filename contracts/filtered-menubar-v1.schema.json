@@ -1,0 +1,315 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surface-app.local/contracts/filtered-menubar-v1.schema.json",
+  "title": "Surface Filtered Menubar View v1",
+  "type": "object",
+  "required": [
+    "contract",
+    "generated_at",
+    "selection_mode",
+    "item_count",
+    "mailbox_count",
+    "sync_status",
+    "mailboxes"
+  ],
+  "properties": {
+    "contract": {
+      "const": "surface.filtered_menubar.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "selection_mode": {
+      "const": "unread"
+    },
+    "item_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "mailbox_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sync_status": {
+      "$ref": "#/$defs/sync_status"
+    },
+    "mailboxes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/mailbox_group"
+      }
+    }
+  },
+  "$defs": {
+    "mailbox": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "name",
+        "email"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "sync_status": {
+      "type": "object",
+      "required": [
+        "state",
+        "last_attempt_at",
+        "last_success_at",
+        "next_scheduled_at",
+        "error",
+        "account_error_count"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "idle",
+            "syncing",
+            "partial",
+            "error"
+          ]
+        },
+        "last_attempt_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "last_success_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "next_scheduled_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "account_error_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "meeting": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "request_type",
+        "response_type",
+        "organizer",
+        "location",
+        "start",
+        "end",
+        "available_rsvp_actions"
+      ],
+      "properties": {
+        "request_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "response_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "organizer": {
+          "$ref": "#/$defs/mailbox"
+        },
+        "location": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "start": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "end": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "available_rsvp_actions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "menubar_item": {
+      "type": "object",
+      "required": [
+        "provider",
+        "account",
+        "message_id",
+        "conversation_id",
+        "conversation_thread_id",
+        "internet_message_id",
+        "sender_primary",
+        "sender_email",
+        "subject",
+        "preview",
+        "received_at",
+        "relative_time",
+        "thread_message_count",
+        "can_rsvp",
+        "available_actions",
+        "meeting"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "account": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conversation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conversation_thread_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "internet_message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sender_primary": {
+          "type": "string"
+        },
+        "sender_email": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subject": {
+          "type": "string"
+        },
+        "preview": {
+          "type": "string"
+        },
+        "received_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "relative_time": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thread_message_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "can_rsvp": {
+          "type": "boolean"
+        },
+        "available_actions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "meeting": {
+          "$ref": "#/$defs/meeting"
+        }
+      },
+      "additionalProperties": false
+    },
+    "mailbox_group": {
+      "type": "object",
+      "required": [
+        "provider",
+        "account",
+        "label",
+        "email_address",
+        "unread_count",
+        "items"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "account": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "email_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unread_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/menubar_item"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

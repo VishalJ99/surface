@@ -5,6 +5,7 @@ Surface App is a provider-first mail backend for a future macOS menu bar app. Pr
 Primary docs:
 
 - `docs/cli-architecture.md`: current CLI usage plus the recommended long-term provider/account/action architecture
+- `docs/menubar-popover-architecture.md`: menu bar popover product boundaries, sync model, and frontend/backend interaction plan
 - `docs/provider-architecture.md`: provider-facing design principles
 - `AGENTS.md`: repo operating guide for future agents and automation
 
@@ -12,7 +13,7 @@ The current focus is backend only:
 
 - stabilize the unread-mail export contract
 - support Outlook and Gmail
-- build the menu bar frontend after both providers can emit the same shape
+- build the read-only menu bar data path before UI iteration
 
 ## Repo Shape
 
@@ -45,6 +46,8 @@ python surface account inspect --provider outlook --account imperial
 python surface unread export --provider outlook --account imperial --headless
 python surface search export --provider outlook --account work --query josh --max-results 50 --headless
 python surface unread export --provider gmail --account personal
+python surface sync run
+python surface view build --view menubar
 python surface filter apply --input ~/.surface/exports/raw/outlook-work-search.json --output ~/.surface/exports/derived/outlook-work-search-thread-summaries.json --backend openrouter
 ```
 
@@ -57,8 +60,15 @@ python surface action ...
 The unread export contract lives in `contracts/unread-mail-v1.schema.json`.
 Outlook search export currently reuses the same `emails[]` and `threads[]` shape, with top-level search metadata added for query-specific exports.
 Derived thread summaries live in `contracts/thread-summaries-v1.schema.json`.
+The current read-only menu bar view contract lives in `contracts/filtered-menubar-v1.schema.json`.
 
 By default, the root CLI stores account state, browser profiles, tokens, and default exports under `~/.surface/`. You can override that location with the `SURFACE_HOME` environment variable.
+
+For the current menu bar phase:
+
+- `python surface sync run` refreshes ready accounts and rebuilds the menubar view
+- `python surface view build --view menubar` reshapes existing raw unread exports into `~/.surface/exports/filtered/menubar-inbox.json`
+- no blocking, semantic filtering, or summaries are attached to the menubar view yet
 
 ## Optional LLM Post-Processing
 
