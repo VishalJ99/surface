@@ -10,6 +10,13 @@ The current build target is intentionally narrow:
 - build a proper macOS Settings window for auth and sync configuration
 - defer quick actions, provider action CLIs, and the detailed viewer until the read path is stable
 
+The current native shell implementation lives under:
+
+- `Package.swift`
+- `apps/menubar/Sources/SurfaceMenubarCore/`
+- `apps/menubar/Sources/SurfaceMenubarApp/`
+- `apps/menubar/Tests/SurfaceMenubarCoreTests/`
+
 ## Product Boundary
 
 Surface is an attention layer over mail, not a provider replacement.
@@ -152,6 +159,14 @@ Current non-behavior:
 - no semantic filtering
 - no LLM summaries
 - no quick actions
+
+Current shell behavior:
+
+- `MenuBarExtra` status item with unread count
+- read-only popover grouped by mailbox
+- inline row expansion for preview and invite details
+- Settings window for local `SURFACE_HOME` and repo-root configuration
+- `Sync Now` wired to `conda run -n surface-app python surface sync run`
 
 ## Future Derived Pipeline
 

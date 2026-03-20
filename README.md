@@ -19,6 +19,9 @@ The current focus is backend only:
 
 ```text
 surface-app/
+  Package.swift
+  apps/
+    menubar/
   contracts/
   docs/
   providers/
@@ -69,6 +72,33 @@ For the current menu bar phase:
 - `python surface sync run` refreshes ready accounts and rebuilds the menubar view
 - `python surface view build --view menubar` reshapes existing raw unread exports into `~/.surface/exports/filtered/menubar-inbox.json`
 - no blocking, semantic filtering, or summaries are attached to the menubar view yet
+
+## macOS Menubar Shell
+
+The first native macOS shell now lives under `apps/menubar/` as a Swift package rooted at `Package.swift`.
+
+Current shell scope:
+
+- menu bar status item with unread count
+- read-only popover grouped by mailbox
+- inline row expansion for preview/invite details
+- Settings window for `SURFACE_HOME` and repo-root configuration
+- `Sync Now` wired to `conda run -n surface-app python surface sync run`
+
+Not implemented yet in the shell:
+
+- quick actions
+- blocking UI
+- semantic filter UI
+- detailed thread viewer
+
+Build and test with Xcode CLI:
+
+```bash
+xcodebuild -list
+xcodebuild -scheme SurfaceMenubarApp -destination 'platform=macOS' build
+xcodebuild -scheme SurfaceMenubar-Package -destination 'platform=macOS' test
+```
 
 ## Optional LLM Post-Processing
 

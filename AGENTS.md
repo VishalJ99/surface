@@ -20,6 +20,7 @@ Frontends should consume derived data from the backend rather than reimplement p
 - [docs/cli-architecture.md](docs/cli-architecture.md)
 - [docs/menubar-popover-architecture.md](docs/menubar-popover-architecture.md)
 - [docs/provider-architecture.md](docs/provider-architecture.md)
+- [Package.swift](Package.swift)
 - [contracts/unread-mail-v1.schema.json](contracts/unread-mail-v1.schema.json)
 - [contracts/thread-summaries-v1.schema.json](contracts/thread-summaries-v1.schema.json)
 - [contracts/filtered-menubar-v1.schema.json](contracts/filtered-menubar-v1.schema.json)
@@ -34,6 +35,7 @@ Frontends should consume derived data from the backend rather than reimplement p
 - The first frontend phase is a read-only macOS menu bar popover fed by `surface.filtered_menubar.v1`.
 - `surface view build --view menubar` is implemented as the current identity read path over raw unread exports.
 - `surface sync run` is implemented to refresh ready accounts and rebuild the menubar view artifact.
+- A native macOS menubar shell now exists under `apps/menubar/` as the Swift package app product `SurfaceMenubarApp`.
 - Blocking, semantic filtering, quick actions, and the detailed viewer are not part of the current build yet.
 - Provider action CLIs are not part of the current frontend build scope yet.
 - CSV is optional and should be treated as a convenience export, not the source of truth.
@@ -47,6 +49,9 @@ Frontends should consume derived data from the backend rather than reimplement p
 - Prefer `conda run -n surface-app python surface ...` for one-off commands.
 - If you need the interpreter path, resolve it dynamically from Conda rather than hard-coding a machine-local path.
 - Do not assume the default `python` has Playwright or the other project dependencies installed.
+- Build the menubar shell with Xcode CLI from the repo root:
+  - `xcodebuild -scheme SurfaceMenubarApp -destination 'platform=macOS' build`
+  - `xcodebuild -scheme SurfaceMenubar-Package -destination 'platform=macOS' test`
 
 ## Current CLI
 
@@ -170,6 +175,23 @@ Current menubar-view notes:
 - the output artifact is `~/.surface/exports/filtered/menubar-inbox.json`
 - sync bookkeeping lives in `~/.surface/ui/sync-status.json`
 - future filtering and summaries should layer on top of raw exports rather than changing provider exporters
+
+### Menubar App Shell
+
+Current app-shell location:
+
+- `Package.swift`
+- `apps/menubar/Sources/SurfaceMenubarCore/`
+- `apps/menubar/Sources/SurfaceMenubarApp/`
+- `apps/menubar/Tests/SurfaceMenubarCoreTests/`
+
+Current shell notes:
+
+- the app is a read-only `MenuBarExtra` shell
+- the popover reads `surface.filtered_menubar.v1`
+- Settings stores `SURFACE_HOME` and repo-root paths for local development
+- `Sync Now` runs `conda run -n surface-app python surface sync run`
+- quick actions and the detailed viewer are still future work
 
 ## Architecture Rules
 
