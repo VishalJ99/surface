@@ -11,6 +11,7 @@ from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterator
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from providers.gmail import auth
 
@@ -18,6 +19,19 @@ CONTRACT_VERSION = "surface.unread_mail.v1"
 PROVIDER_NAME = "gmail"
 SOURCE_NAME = "gmail_api"
 UNREAD_LABEL = "UNREAD"
+CALENDAR_PART_MIME_TYPES = {"text/calendar", "application/ics"}
+INFERRED_RSVP_ACTIONS = ["AcceptItem", "TentativelyAcceptItem", "DeclineItem"]
+WINDOWS_TIMEZONE_ALIASES = {
+    "UTC": "UTC",
+    "GMT Standard Time": "Europe/London",
+    "W. Europe Standard Time": "Europe/Berlin",
+    "Central Europe Standard Time": "Europe/Budapest",
+    "Romance Standard Time": "Europe/Paris",
+    "Eastern Standard Time": "America/New_York",
+    "Central Standard Time": "America/Chicago",
+    "Mountain Standard Time": "America/Denver",
+    "Pacific Standard Time": "America/Los_Angeles",
+}
 
 
 class HTMLTextExtractor(HTMLParser):
@@ -155,18 +169,24 @@ def part_charset(part: dict[str, Any]) -> str:
     return "utf-8"
 
 
+def decode_base64url_bytes(data: str) -> bytes:
+    padding = "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode((data + padding).encode("ascii"))
+
+
+def decode_bytes(raw_bytes: bytes, charset: str) -> str:
+    try:
+        return raw_bytes.decode(charset, errors="replace")
+    except LookupError:
+        return raw_bytes.decode("utf-8", errors="replace")
+
+
 def decode_part_data(part: dict[str, Any]) -> str:
     data = (part.get("body") or {}).get("data")
     if not data:
         return ""
 
-    padding = "=" * (-len(data) % 4)
-    raw_bytes = base64.urlsafe_b64decode((data + padding).encode("ascii"))
-    charset = part_charset(part)
-    try:
-        return raw_bytes.decode(charset, errors="replace")
-    except LookupError:
-        return raw_bytes.decode("utf-8", errors="replace")
+    return decode_bytes(decode_base64url_bytes(data), part_charset(part))
 
 
 def extract_message_bodies(payload: dict[str, Any] | None) -> tuple[str, str]:
@@ -194,7 +214,247 @@ def extract_message_bodies(payload: dict[str, Any] | None) -> tuple[str, str]:
     return plain_body, html_body
 
 
-def build_message_record(message: dict[str, Any], *, is_root_node: bool) -> dict[str, Any]:
+def is_calendar_part(part: dict[str, Any]) -> bool:
+    mime_type = (part.get("mimeType") or "").lower()
+    filename = (part.get("filename") or "").lower()
+    return mime_type in CALENDAR_PART_MIME_TYPES or filename.endswith(".ics")
+
+
+def fetch_attachment_text(service: Any, message_id: str, attachment_id: str, charset: str) -> str:
+    attachment = execute(
+        service.users().messages().attachments().get(
+            userId="me",
+            messageId=message_id,
+            id=attachment_id,
+        ),
+        description=f"fetching Gmail attachment {attachment_id} for message {message_id}",
+    )
+    data = attachment.get("data")
+    if not data:
+        return ""
+    return decode_bytes(decode_base64url_bytes(data), charset)
+
+
+def extract_calendar_text(service: Any, message: dict[str, Any]) -> str:
+    message_id = message.get("id")
+    if not message_id:
+        return ""
+
+    for part in iter_parts(message.get("payload")):
+        if not is_calendar_part(part):
+            continue
+        body = part.get("body") or {}
+        data = body.get("data")
+        if data:
+            return decode_bytes(decode_base64url_bytes(data), part_charset(part))
+        attachment_id = body.get("attachmentId")
+        if attachment_id:
+            text = fetch_attachment_text(service, message_id, attachment_id, part_charset(part))
+            if text:
+                return text
+    return ""
+
+
+def unfold_ics_lines(value: str) -> list[str]:
+    lines: list[str] = []
+    for raw_line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if raw_line.startswith((" ", "\t")) and lines:
+            lines[-1] += raw_line[1:]
+        else:
+            lines.append(raw_line)
+    return [line for line in lines if line]
+
+
+def parse_ics_content_line(line: str) -> tuple[str, dict[str, str], str] | None:
+    if ":" not in line:
+        return None
+
+    left, value = line.split(":", 1)
+    segments = left.split(";")
+    name = segments[0].upper()
+    params: dict[str, str] = {}
+    for segment in segments[1:]:
+        if "=" in segment:
+            key, param_value = segment.split("=", 1)
+            params[key.upper()] = param_value.strip('"')
+        else:
+            params[segment.upper()] = ""
+    return name, params, value
+
+
+def unescape_ics_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return (
+        value.replace("\\N", "\n")
+        .replace("\\n", "\n")
+        .replace("\\,", ",")
+        .replace("\\;", ";")
+        .replace("\\\\", "\\")
+    )
+
+
+def resolve_ics_timezone(tzid: str | None) -> str | None:
+    if not tzid:
+        return None
+    return WINDOWS_TIMEZONE_ALIASES.get(tzid, tzid)
+
+
+def parse_ics_datetime(value: str | None, params: dict[str, str]) -> str | None:
+    if not value:
+        return None
+
+    raw_value = value.strip()
+    if re.fullmatch(r"\d{8}", raw_value):
+        try:
+            return datetime.strptime(raw_value, "%Y%m%d").date().isoformat()
+        except ValueError:
+            return raw_value
+
+    if raw_value.endswith("Z"):
+        try:
+            return normalize_datetime(datetime.strptime(raw_value, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc))
+        except ValueError:
+            return raw_value
+
+    format_string = "%Y%m%dT%H%M%S" if len(raw_value) == 15 else "%Y%m%dT%H%M"
+    try:
+        parsed = datetime.strptime(raw_value, format_string)
+    except ValueError:
+        return raw_value
+
+    timezone_name = resolve_ics_timezone(params.get("TZID"))
+    if timezone_name:
+        try:
+            return normalize_datetime(parsed.replace(tzinfo=ZoneInfo(timezone_name)))
+        except ZoneInfoNotFoundError:
+            return raw_value
+    return parsed.isoformat()
+
+
+def ics_mailbox(value: str | None, params: dict[str, str]) -> dict[str, str] | None:
+    if not value and not params.get("CN"):
+        return None
+    email = (value or "").strip()
+    if email.lower().startswith("mailto:"):
+        email = email[7:]
+    name = unescape_ics_value(params.get("CN")) or ""
+    if not name and not email:
+        return None
+    return {"name": name, "email": email}
+
+
+def normalize_email(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def parse_calendar_invite(
+    ics_text: str,
+    *,
+    mailbox_email: str | None,
+    recipient_emails: list[str],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    method: str | None = None
+    event_properties: dict[str, tuple[dict[str, str], str]] = {}
+    attendees: list[tuple[dict[str, str], str]] = []
+    in_event = False
+
+    for line in unfold_ics_lines(ics_text):
+        parsed = parse_ics_content_line(line)
+        if parsed is None:
+            continue
+        name, params, value = parsed
+        upper_value = value.upper()
+
+        if name == "METHOD" and method is None:
+            method = upper_value
+            continue
+
+        if name == "BEGIN" and upper_value == "VEVENT":
+            in_event = True
+            continue
+
+        if name == "END" and upper_value == "VEVENT":
+            break
+
+        if not in_event:
+            continue
+
+        if name == "ATTENDEE":
+            attendees.append((params, value))
+        elif name not in event_properties:
+            event_properties[name] = (params, value)
+
+    if not event_properties and not attendees:
+        return None, []
+
+    organizer = ics_mailbox(*event_properties.get("ORGANIZER", ({}, ""))[::-1]) if "ORGANIZER" in event_properties else None
+    attendee_targets = {normalize_email(mailbox_email), *(normalize_email(email) for email in recipient_emails)}
+    attendee_targets.discard("")
+
+    selected_attendee: dict[str, Any] | None = None
+    for params, value in attendees:
+        mailbox = ics_mailbox(value, params)
+        email = normalize_email((mailbox or {}).get("email"))
+        if email and email in attendee_targets:
+            selected_attendee = {
+                "mailbox": mailbox,
+                "partstat": (params.get("PARTSTAT") or "").upper() or None,
+                "rsvp": (params.get("RSVP") or "").upper() == "TRUE",
+                "role": (params.get("ROLE") or "").upper() or None,
+            }
+            break
+
+    event_status = (event_properties.get("STATUS", ({}, ""))[1] or "").upper() or None
+    request_type = method or None
+    available_rsvp_actions = (
+        list(INFERRED_RSVP_ACTIONS)
+        if request_type == "REQUEST" and event_status != "CANCELLED" and selected_attendee is not None
+        else []
+    )
+
+    start_params, start_value = event_properties.get("DTSTART", ({}, ""))
+    end_params, end_value = event_properties.get("DTEND", ({}, ""))
+    timezone_id = start_params.get("TZID") or end_params.get("TZID")
+    meeting = {
+        "request_type": request_type,
+        "response_type": selected_attendee.get("partstat") if selected_attendee else None,
+        "organizer": organizer,
+        "location": unescape_ics_value(event_properties.get("LOCATION", ({}, None))[1]),
+        "start": parse_ics_datetime(start_value, start_params),
+        "end": parse_ics_datetime(end_value, end_params),
+        "uid": event_properties.get("UID", ({}, None))[1],
+        "status": event_status,
+        "timezone": timezone_id,
+        "available_rsvp_actions": available_rsvp_actions,
+    }
+    if selected_attendee and selected_attendee.get("mailbox"):
+        meeting["attendee"] = selected_attendee["mailbox"]
+    if selected_attendee and selected_attendee.get("role"):
+        meeting["attendee_role"] = selected_attendee["role"]
+
+    return {key: value for key, value in meeting.items() if value is not None}, available_rsvp_actions
+
+
+def extract_meeting_data(service: Any, message: dict[str, Any], *, mailbox_email: str | None) -> tuple[dict[str, Any] | None, list[str]]:
+    ics_text = extract_calendar_text(service, message)
+    if not ics_text:
+        return None, []
+
+    payload = message.get("payload", {})
+    headers = header_index(payload.get("headers"))
+    recipient_emails = [
+        mailbox.get("email", "")
+        for mailbox in (
+            parse_mailboxes(headers.get("to"))
+            + parse_mailboxes(headers.get("cc"))
+            + parse_mailboxes(headers.get("bcc"))
+        )
+    ]
+    return parse_calendar_invite(ics_text, mailbox_email=mailbox_email, recipient_emails=recipient_emails)
+
+
+def build_message_record(service: Any, message: dict[str, Any], *, is_root_node: bool, mailbox_email: str | None) -> dict[str, Any]:
     payload = message.get("payload", {})
     headers = header_index(payload.get("headers"))
     plain_body, html_body = extract_message_bodies(payload)
@@ -207,6 +467,7 @@ def build_message_record(message: dict[str, Any], *, is_root_node: bool) -> dict
     message_id = message.get("id")
     thread_id = message.get("threadId")
     is_read = UNREAD_LABEL not in set(message.get("labelIds", []))
+    meeting, available_rsvp_actions = extract_meeting_data(service, message, mailbox_email=mailbox_email)
 
     return {
         "message_id": message_id,
@@ -229,9 +490,9 @@ def build_message_record(message: dict[str, Any], *, is_root_node: bool) -> dict
         "body_html": html_body,
         "body_scope": "full_message",
         "preview": preview,
-        "available_actions": [],
-        "can_rsvp": False,
-        "meeting": None,
+        "available_actions": available_rsvp_actions,
+        "can_rsvp": bool(available_rsvp_actions),
+        "meeting": meeting,
         "has_quoted_text": None,
         "is_root_node": is_root_node,
     }
@@ -312,7 +573,7 @@ def run_export(args: argparse.Namespace) -> int:
         unread_thread_messages: list[tuple[str, dict[str, Any]]] = []
 
         for index, message in enumerate(thread.get("messages", [])):
-            record = build_message_record(message, is_root_node=index == 0)
+            record = build_message_record(service, message, is_root_node=index == 0, mailbox_email=profile_email)
             thread_messages.append(record)
 
             message_id = message.get("id")

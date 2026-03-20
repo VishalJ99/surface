@@ -57,6 +57,7 @@ The exporter:
 - lists unread Gmail messages with the Gmail API
 - fetches full thread history for those unread messages
 - extracts message headers and plain-text/HTML bodies
+- parses `.ics` / `text/calendar` invite payloads and infers RSVP metadata when present
 - writes JSON in `surface.unread_mail.v1`
 
 ## Local State
